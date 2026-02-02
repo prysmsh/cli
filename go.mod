@@ -5,6 +5,7 @@ go 1.23.1
 toolchain go1.24.12
 
 require (
+	github.com/prysm/pkg/tlsutil v0.0.0
 	github.com/fatih/color v1.16.0
 	github.com/gorilla/websocket v1.5.1
 	github.com/spf13/cobra v1.7.0
@@ -48,4 +49,5 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
+replace github.com/prysm/pkg/tlsutil => ../pkg/tlsutil
 replace github.com/warp-run/prysm-meshd => ../prysm-meshd

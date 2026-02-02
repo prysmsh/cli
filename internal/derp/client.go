@@ -15,6 +15,7 @@ import (
 
 	"github.com/fatih/color"
 	"github.com/gorilla/websocket"
+	"github.com/prysm/pkg/tlsutil"
 )
 
 // EventType represents incoming DERP message categories.
@@ -87,9 +88,7 @@ func WithLogLevel(level LogLevel) Option {
 func WithInsecure(insecure bool) Option {
 	return func(c *Client) {
 		if insecure {
-			c.dialer.TLSClientConfig = &tls.Config{
-				InsecureSkipVerify: true,
-			}
+			c.dialer.TLSClientConfig.InsecureSkipVerify = true
 		}
 	}
 }
@@ -103,12 +102,15 @@ func WithSessionToken(token string) Option {
 
 // NewClient constructs a DERP websocket client.
 func NewClient(url, deviceID string, opts ...Option) *Client {
+	tlsConfig := &tls.Config{}
+	tlsutil.ApplyPQCConfig(tlsConfig)
 	client := &Client{
 		url:      url,
 		deviceID: deviceID,
 		dialer: &websocket.Dialer{
 			Proxy:            http.ProxyFromEnvironment,
 			HandshakeTimeout: 10 * time.Second,
+			TLSClientConfig:  tlsConfig,
 		},
 		logLevel: LogInfo,
 		logger:   log.New(os.Stdout, "", 0),

@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/prysm/pkg/tlsutil"
 )
 
 // Client wraps HTTP access to the Prysm control plane API.
@@ -143,6 +145,7 @@ func NewClient(base string, opts ...Option) *Client {
 			NextProtos: []string{"http/1.1"},
 		}
 	}
+	tlsutil.ApplyPQCConfig(baseTransport.TLSClientConfig)
 
 	if client.dialOverride != "" {
 		dialAddr := client.dialOverride
