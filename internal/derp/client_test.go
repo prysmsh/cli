@@ -71,6 +71,43 @@ func TestNewClientWithInsecure(t *testing.T) {
 	}
 }
 
+func TestNewClientWithTunnelTrafficHandler(t *testing.T) {
+	var receivedRouteID string
+	var receivedTargetPort int
+
+	handler := func(routeID string, targetPort, externalPort int, data []byte) {
+		receivedRouteID = routeID
+		receivedTargetPort = targetPort
+	}
+
+	client := NewClient("wss://derp.example.com", "dev-1",
+		WithTunnelTrafficHandler(handler),
+	)
+
+	if client.TunnelTrafficHandler == nil {
+		t.Fatal("TunnelTrafficHandler should be set")
+	}
+
+	client.TunnelTrafficHandler("route_123", 5432, 30000, nil)
+	if receivedRouteID != "route_123" {
+		t.Errorf("receivedRouteID = %q, want route_123", receivedRouteID)
+	}
+	if receivedTargetPort != 5432 {
+		t.Errorf("receivedTargetPort = %d, want 5432", receivedTargetPort)
+	}
+}
+
+func TestSendRouteRequestWithoutConnection(t *testing.T) {
+	client := NewClient("wss://derp.example.com", "dev-1")
+	err := client.SendRouteRequest("1", "device_abc", 30000, 5432, "TCP")
+	if err == nil {
+		t.Fatal("expected error when sending without connection")
+	}
+	if !strings.Contains(err.Error(), "connection not established") {
+		t.Errorf("expected connection error, got: %v", err)
+	}
+}
+
 func TestClientRunWithoutDeviceID(t *testing.T) {
 	client := NewClient("wss://derp.example.com", "")
 

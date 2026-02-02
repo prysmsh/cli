@@ -82,9 +82,3 @@ func (c *Client) SetMeshNodeExitByDeviceID(ctx context.Context, deviceID string,
 	return err
 }
 
-// SetWireguardExitPreference sets the selected exit peer for a WireGuard device.
-func (c *Client) SetWireguardExitPreference(ctx context.Context, deviceID string, exitPeerID *int64) error {
-	payload := map[string]interface{}{"exit_peer_id": exitPeerID}
-	_, err := c.Do(ctx, "PUT", fmt.Sprintf("/mesh/wireguard/devices/%s/exit-preference", deviceID), payload, nil)
-	return err
-}

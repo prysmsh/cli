@@ -15,7 +15,6 @@ import (
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
-	"github.com/warp-run/prysm-cli/internal/daemon"
 	"github.com/warp-run/prysm-cli/internal/derp"
 	"github.com/warp-run/prysm-cli/internal/util"
 )
@@ -40,7 +39,7 @@ func removeDerpPidfile(home string) {
 func newMeshCommand() *cobra.Command {
 	meshCmd := &cobra.Command{
 		Use:   "mesh",
-		Short: "Interact with the DERP mesh network and manage WireGuard tunnels",
+		Short: "Interact with the DERP mesh network",
 	}
 
 	meshCmd.AddCommand(
@@ -48,13 +47,6 @@ func newMeshCommand() *cobra.Command {
 		newMeshPeersCommand(),
 		newMeshRoutesCommand(),
 		newMeshExitCommand(),
-		newMeshExitPreferenceCommand(),
-		newMeshEnrollCommand(),
-		newMeshConfigCommand(),
-		newMeshUpCommand(),
-		newMeshDownCommand(),
-		newMeshStatusCommand(),
-		newMeshdCommand(), // Daemon subcommand
 	)
 
 	return meshCmd
@@ -77,57 +69,7 @@ func newMeshConnectCommand() *cobra.Command {
 	return c
 }
 
-// ensureMeshdRunning starts the meshd daemon in the background if it is not already
-// reachable on the given socket. It returns once the daemon responds or after a timeout.
-func ensureMeshdRunning(ctx context.Context, socketPath string) error {
-	client := daemon.NewClient(socketPath)
-	checkCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	_, err := client.Status(checkCtx)
-	cancel()
-	if err == nil {
-		return nil
-	}
-
-	exe, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("cannot find executable to start meshd: %w", err)
-	}
-	child := exec.Command(exe, "mesh", "meshd", "--socket", socketPath)
-	child.Stdin = nil
-	child.Stdout = nil
-	child.Stderr = nil
-	child.Env = os.Environ()
-	if child.SysProcAttr == nil {
-		child.SysProcAttr = &syscall.SysProcAttr{}
-	}
-	setSysProcAttrSetsid(child.SysProcAttr)
-	if err := child.Start(); err != nil {
-		return fmt.Errorf("start meshd: %w", err)
-	}
-	_ = child.Process.Release()
-
-	// Poll until daemon responds (meshd runs independently of this process)
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		checkCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
-		_, err := daemon.NewClient(socketPath).Status(checkCtx)
-		cancel()
-		if err == nil {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(200 * time.Millisecond):
-		}
-	}
-	return fmt.Errorf("meshd did not become ready in time (socket %s)", socketPath)
-}
-
 func runMeshConnectBackground(cmd *cobra.Command) error {
-	if err := ensureMeshdRunning(cmd.Context(), daemon.DefaultSocket()); err != nil {
-		return err
-	}
 	exe, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("cannot find executable: %w", err)
@@ -173,10 +115,6 @@ func runMeshConnect(cmd *cobra.Command) error {
 		return fmt.Errorf("write DERP pidfile: %w", err)
 	}
 	defer removeDerpPidfile(home)
-
-	if err := ensureMeshdRunning(cmd.Context(), daemon.DefaultSocket()); err != nil {
-		return err
-	}
 
 	app := MustApp()
 			sess, err := app.Sessions.Load()

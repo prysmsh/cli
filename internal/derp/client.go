@@ -15,7 +15,7 @@ import (
 
 	"github.com/fatih/color"
 	"github.com/gorilla/websocket"
-	"github.com/prysm/pkg/tlsutil"
+	"github.com/prysmsh/pkg/tlsutil"
 )
 
 // EventType represents incoming DERP message categories.
@@ -30,8 +30,16 @@ const (
 	EventStatsUpdate      EventType = "stats_update"
 	EventPong             EventType = "pong"
 	EventError            EventType = "error"
+	EventRouteSetup       EventType = "route_setup"
+	EventRouteResponse    EventType = "route_response"
+	EventTrafficData      EventType = "traffic_data"
 	EventUnknown          EventType = "unknown"
 )
+
+// TunnelTrafficHandler is called when tunnel traffic is received (route_setup or traffic_data).
+// For route_setup: routeID, targetPort, externalPort are set; data is nil.
+// For traffic_data: routeID and data are set.
+type TunnelTrafficHandler func(routeID string, targetPort, externalPort int, data []byte)
 
 // Client manages a DERP websocket connection.
 type Client struct {
@@ -48,6 +56,9 @@ type Client struct {
 	mu     sync.RWMutex
 	conn   *websocket.Conn
 	cancel context.CancelFunc
+
+	// TunnelTrafficHandler is optional; when set, route_setup and traffic_data are forwarded.
+	TunnelTrafficHandler TunnelTrafficHandler
 }
 
 // LogLevel controls verbosity.
@@ -97,6 +108,13 @@ func WithInsecure(insecure bool) Option {
 func WithSessionToken(token string) Option {
 	return func(c *Client) {
 		c.sessionToken = token
+	}
+}
+
+// WithTunnelTrafficHandler sets the callback for tunnel route_setup and traffic_data messages.
+func WithTunnelTrafficHandler(h TunnelTrafficHandler) Option {
+	return func(c *Client) {
+		c.TunnelTrafficHandler = h
 	}
 }
 
@@ -259,6 +277,48 @@ func (c *Client) send(payload map[string]interface{}) error {
 	return nil
 }
 
+// SendRouteRequest sends a route_request to create a tunnel route (source=this client, target=targetClient).
+func (c *Client) SendRouteRequest(organizationID string, targetClient string, externalPort, targetPort int, protocol string) error {
+	if protocol == "" {
+		protocol = "TCP"
+	}
+	routeID := fmt.Sprintf("tunnel_%d", time.Now().UnixNano())
+	data, err := json.Marshal(map[string]interface{}{
+		"route_id":        routeID,
+		"target_client":   targetClient,
+		"organization_id": organizationID,
+		"external_port":   externalPort,
+		"target_port":     targetPort,
+		"protocol":        protocol,
+	})
+	if err != nil {
+		return err
+	}
+	return c.send(map[string]interface{}{
+		"type": "route_request",
+		"from": c.deviceID,
+		"to":   "server",
+		"data": data,
+	})
+}
+
+// SendTrafficData sends traffic_data for a route (used by tunnel connect to forward bytes).
+func (c *Client) SendTrafficData(routeID string, data []byte) error {
+	payload, err := json.Marshal(map[string]interface{}{
+		"route_id": routeID,
+		"data":     data,
+	})
+	if err != nil {
+		return err
+	}
+	return c.send(map[string]interface{}{
+		"type": "traffic_data",
+		"from": c.deviceID,
+		"to":   "server",
+		"data": payload,
+	})
+}
+
 func (c *Client) handleMessage(msg map[string]interface{}) {
 	eventType := EventType(getString(msg["type"]))
 
@@ -281,6 +341,12 @@ func (c *Client) handleMessage(msg map[string]interface{}) {
 		if c.logLevel == LogDebug {
 			c.log(color.HiBlackString("< pong >"))
 		}
+	case EventRouteSetup:
+		c.handleRouteSetup(msg)
+	case EventRouteResponse:
+		c.handleRouteResponse(msg)
+	case EventTrafficData:
+		c.handleTrafficData(msg)
 	case EventError:
 		code, detail := parseErrorPayload(msg["data"])
 		if detail != "" {
@@ -298,6 +364,77 @@ func (c *Client) handleMessage(msg map[string]interface{}) {
 func (c *Client) log(message string) {
 	if c.logger != nil {
 		c.logger.Println(message)
+	}
+}
+
+func (c *Client) handleRouteSetup(msg map[string]interface{}) {
+	data := msg["data"]
+	if data == nil {
+		return
+	}
+	var payload struct {
+		RouteID        string `json:"route_id"`
+		ExternalPort   int    `json:"external_port"`
+		TargetPort     int    `json:"target_port"`
+		Protocol       string `json:"protocol"`
+		OrganizationID string `json:"organization_id"`
+	}
+	var dataBytes []byte
+	switch v := data.(type) {
+	case string:
+		dataBytes = []byte(v)
+	case []byte:
+		dataBytes = v
+	default:
+		dataBytes, _ = json.Marshal(data)
+	}
+	if err := json.Unmarshal(dataBytes, &payload); err != nil {
+		if c.logLevel == LogDebug {
+			c.log(color.HiBlackString("route_setup parse error: %v", err))
+		}
+		return
+	}
+	if c.TunnelTrafficHandler != nil {
+		c.TunnelTrafficHandler(payload.RouteID, payload.TargetPort, payload.ExternalPort, nil)
+	} else if c.logLevel == LogDebug {
+		c.log(color.HiBlueString("route_setup: %s target_port=%d ext_port=%d", payload.RouteID, payload.TargetPort, payload.ExternalPort))
+	}
+}
+
+func (c *Client) handleRouteResponse(msg map[string]interface{}) {
+	if c.logLevel == LogDebug {
+		c.log(color.HiBlueString("route_response received"))
+	}
+}
+
+func (c *Client) handleTrafficData(msg map[string]interface{}) {
+	data := msg["data"]
+	if data == nil {
+		return
+	}
+	var payload struct {
+		RouteID string `json:"route_id"`
+		Data    []byte `json:"data"`
+	}
+	var dataBytes []byte
+	switch v := data.(type) {
+	case string:
+		dataBytes = []byte(v)
+	case []byte:
+		dataBytes = v
+	default:
+		dataBytes, _ = json.Marshal(data)
+	}
+	if err := json.Unmarshal(dataBytes, &payload); err != nil {
+		if c.logLevel == LogDebug {
+			c.log(color.HiBlackString("traffic_data parse error: %v", err))
+		}
+		return
+	}
+	if c.TunnelTrafficHandler != nil {
+		c.TunnelTrafficHandler(payload.RouteID, 0, 0, payload.Data)
+	} else if c.logLevel == LogDebug {
+		c.log(color.HiBlackString("traffic_data: route=%s len=%d", payload.RouteID, len(payload.Data)))
 	}
 }
 

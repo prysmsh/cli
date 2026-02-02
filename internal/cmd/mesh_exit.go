@@ -4,21 +4,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
-
-	"github.com/warp-run/prysm-cli/internal/derp"
 )
 
 func newMeshExitCommand() *cobra.Command {
 	exitCmd := &cobra.Command{
 		Use:   "exit",
-		Short: "Manage exit nodes and exit preferences",
+		Short: "Manage exit nodes",
 	}
 
 	exitCmd.AddCommand(
@@ -110,97 +107,4 @@ func newMeshExitDisableCommand() *cobra.Command {
 
 	cmd.Flags().StringVar(&nodeRef, "node", "", "mesh node ID or device ID")
 	return cmd
-}
-
-
-func newMeshExitPreferenceCommand() *cobra.Command {
-	prefCmd := &cobra.Command{
-		Use:   "exit-preference",
-		Short: "Set which exit node to use for your WireGuard traffic",
-	}
-
-	prefCmd.AddCommand(
-		newMeshExitPreferenceSetCommand(),
-		newMeshExitPreferenceClearCommand(),
-	)
-
-	return prefCmd
-}
-
-func newMeshExitPreferenceSetCommand() *cobra.Command {
-	var deviceID string
-
-	cmd := &cobra.Command{
-		Use:   "set <peer-id>",
-		Short: "Set exit node preference (route your traffic through this peer)",
-		Long:  "Set the exit node for your WireGuard device. Use peer ID from `prysm mesh peers` (exit-enabled nodes).",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			peerID, err := strconv.ParseInt(args[0], 10, 64)
-			if err != nil {
-				return fmt.Errorf("invalid peer id: %w", err)
-			}
-
-			if strings.TrimSpace(deviceID) == "" {
-				// Try to get from config or derp
-				deviceID, err = getDefaultDeviceID()
-				if err != nil {
-					return fmt.Errorf("device-id required (run with --device-id or set in config): %w", err)
-				}
-			}
-
-			app := MustApp()
-			ctx, cancel := context.WithTimeout(cmd.Context(), 15*time.Second)
-			defer cancel()
-
-			pid := peerID
-			if err := app.API.SetWireguardExitPreference(ctx, deviceID, &pid); err != nil {
-				return fmt.Errorf("set exit preference: %w", err)
-			}
-			color.New(color.FgGreen).Printf("✓ Exit preference set to peer %d for device %s\n", peerID, deviceID)
-			return nil
-		},
-	}
-
-	cmd.Flags().StringVar(&deviceID, "device-id", "", "WireGuard device ID (from mesh enroll)")
-	return cmd
-}
-
-func newMeshExitPreferenceClearCommand() *cobra.Command {
-	var deviceID string
-
-	cmd := &cobra.Command{
-		Use:   "clear",
-		Short: "Clear exit node preference (use direct connection)",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if strings.TrimSpace(deviceID) == "" {
-				var err error
-				deviceID, err = getDefaultDeviceID()
-				if err != nil {
-					return fmt.Errorf("device-id required (run with --device-id): %w", err)
-				}
-			}
-
-			app := MustApp()
-			ctx, cancel := context.WithTimeout(cmd.Context(), 15*time.Second)
-			defer cancel()
-
-			if err := app.API.SetWireguardExitPreference(ctx, deviceID, nil); err != nil {
-				return fmt.Errorf("clear exit preference: %w", err)
-			}
-			color.New(color.FgGreen).Printf("✓ Exit preference cleared for device %s\n", deviceID)
-			return nil
-		},
-	}
-
-	cmd.Flags().StringVar(&deviceID, "device-id", "", "WireGuard device ID")
-	return cmd
-}
-
-func getDefaultDeviceID() (string, error) {
-	if id := strings.TrimSpace(os.Getenv("PRYSM_DEVICE_ID")); id != "" {
-		return id, nil
-	}
-	app := MustApp()
-	return derp.EnsureDeviceID(app.Config.HomeDir)
 }

@@ -16,7 +16,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/prysm/pkg/tlsutil"
+	"github.com/prysmsh/pkg/tlsutil"
 )
 
 // Client wraps HTTP access to the Prysm control plane API.

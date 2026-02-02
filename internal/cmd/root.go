@@ -97,6 +97,7 @@ func init() {
 		newSessionCommand(),
 		newConnectCommand(),
 		newMeshCommand(),
+		newTunnelCommand(),
 		newAuditCommand(),
 		newAgentCommand(),
 		newClustersCommand(),
