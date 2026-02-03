@@ -13,6 +13,7 @@ import (
 
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 
 	"github.com/warp-run/prysm-cli/internal/api"
 	"github.com/warp-run/prysm-cli/internal/util"
@@ -34,10 +35,11 @@ func newConnectCommand() *cobra.Command {
 
 func newConnectKubernetesCommand() *cobra.Command {
 	var (
-		clusterRef string
-		namespace  string
-		reason     string
-		outputPath string
+		clusterRef     string
+		namespace      string
+		reason         string
+		outputPath     string
+		execCredential bool
 	)
 
 	cmd := &cobra.Command{
@@ -92,6 +94,15 @@ func newConnectKubernetesCommand() *cobra.Command {
 				return fmt.Errorf("kubeconfig has no auth token; run `prysm login` then retry `connect k8s`")
 			}
 
+			if execCredential {
+				execPath := resolveExecPath()
+				transformed, err := replaceTokenWithExecCredential(kubeconfig, execPath)
+				if err != nil {
+					return fmt.Errorf("apply --exec-credential transform: %w", err)
+				}
+				kubeconfig = transformed
+			}
+
 			if outputPath != "" {
 				dest := outputPath
 				if !filepath.IsAbs(dest) {
@@ -120,6 +131,7 @@ func newConnectKubernetesCommand() *cobra.Command {
 	cmd.Flags().StringVar(&namespace, "namespace", "", "override namespace policy")
 	cmd.Flags().StringVar(&reason, "reason", "", "access justification for audit logs")
 	cmd.Flags().StringVarP(&outputPath, "output", "o", "", "write kubeconfig to file")
+	cmd.Flags().BoolVar(&execCredential, "exec-credential", true, "use kubectl exec credential plugin instead of embedding a token (disable with --exec-credential=false)")
 
 	return cmd
 }
@@ -189,4 +201,115 @@ func decodeKubeconfig(material api.KubeconfigMaterial) (string, error) {
 // Deprecated: use util.QuoteYAMLString instead.
 func quoteYAMLString(s string) string {
 	return util.QuoteYAMLString(s)
+}
+
+// resolveExecPath returns the absolute path to the current prysm binary.
+// Falls back to "prysm" (PATH lookup) if resolution fails.
+func resolveExecPath() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return "prysm"
+	}
+	exe, err = filepath.EvalSymlinks(exe)
+	if err != nil {
+		return "prysm"
+	}
+	return exe
+}
+
+// replaceTokenWithExecCredential parses a kubeconfig YAML string and replaces
+// every user[].user.token field with a user[].user.exec block that invokes
+// `prysm credential k8s`.
+func replaceTokenWithExecCredential(raw string, execPath string) (string, error) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal([]byte(raw), &doc); err != nil {
+		return "", fmt.Errorf("parse kubeconfig YAML: %w", err)
+	}
+
+	// The document node wraps the root mapping.
+	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
+		return "", fmt.Errorf("unexpected kubeconfig YAML structure")
+	}
+	root := doc.Content[0]
+
+	usersNode := yamlMappingValue(root, "users")
+	if usersNode == nil || usersNode.Kind != yaml.SequenceNode {
+		return "", fmt.Errorf("kubeconfig has no users sequence")
+	}
+
+	for _, entry := range usersNode.Content {
+		if entry.Kind != yaml.MappingNode {
+			continue
+		}
+		userNode := yamlMappingValue(entry, "user")
+		if userNode == nil || userNode.Kind != yaml.MappingNode {
+			continue
+		}
+
+		// Remove "token" key/value pair from the user mapping.
+		yamlMappingDelete(userNode, "token")
+
+		// Build the exec block.
+		execNode := &yaml.Node{
+			Kind: yaml.MappingNode,
+			Tag:  "!!map",
+			Content: []*yaml.Node{
+				{Kind: yaml.ScalarNode, Value: "apiVersion"},
+				{Kind: yaml.ScalarNode, Value: "client.authentication.k8s.io/v1"},
+				{Kind: yaml.ScalarNode, Value: "command"},
+				{Kind: yaml.ScalarNode, Value: execPath},
+				{Kind: yaml.ScalarNode, Value: "args"},
+				{
+					Kind: yaml.SequenceNode,
+					Tag:  "!!seq",
+					Content: []*yaml.Node{
+						{Kind: yaml.ScalarNode, Value: "credential"},
+						{Kind: yaml.ScalarNode, Value: "k8s"},
+					},
+				},
+				{Kind: yaml.ScalarNode, Value: "interactiveMode"},
+				{Kind: yaml.ScalarNode, Value: "Never"},
+			},
+		}
+
+		// Remove any existing exec block before adding the new one.
+		yamlMappingDelete(userNode, "exec")
+
+		userNode.Content = append(userNode.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Value: "exec"},
+			execNode,
+		)
+	}
+
+	out, err := yaml.Marshal(&doc)
+	if err != nil {
+		return "", fmt.Errorf("serialize kubeconfig YAML: %w", err)
+	}
+	return string(out), nil
+}
+
+// yamlMappingValue returns the value node for the given key in a mapping node.
+func yamlMappingValue(mapping *yaml.Node, key string) *yaml.Node {
+	if mapping.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(mapping.Content); i += 2 {
+		if mapping.Content[i].Value == key {
+			return mapping.Content[i+1]
+		}
+	}
+	return nil
+}
+
+// yamlMappingDelete removes a key/value pair from a mapping node.
+func yamlMappingDelete(mapping *yaml.Node, key string) {
+	if mapping.Kind != yaml.MappingNode {
+		return
+	}
+	for i := 0; i+1 < len(mapping.Content); i += 2 {
+		if mapping.Content[i].Value == key {
+			mapping.Content = append(mapping.Content[:i], mapping.Content[i+2:]...)
+			return
+		}
+	}
 }

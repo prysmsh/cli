@@ -219,7 +219,7 @@ func (c *Client) Do(ctx context.Context, method, endpoint string, payload interf
 	}
 
 	defer func() {
-		if resp.Body != nil && v == nil {
+		if resp.Body != nil {
 			io.Copy(io.Discard, resp.Body)
 			resp.Body.Close()
 		}

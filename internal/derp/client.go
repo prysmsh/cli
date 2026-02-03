@@ -43,11 +43,12 @@ type TunnelTrafficHandler func(routeID string, targetPort, externalPort int, dat
 
 // Client manages a DERP websocket connection.
 type Client struct {
-	url          string
-	deviceID     string
-	capabilities map[string]interface{}
-	headers      http.Header
-	sessionToken string
+	url             string
+	deviceID        string
+	capabilities    map[string]interface{}
+	headers         http.Header
+	sessionToken    string
+	derpTunnelToken string // Signed JWT with org binding; preferred over sessionToken
 
 	dialer   *websocket.Dialer
 	logLevel LogLevel
@@ -108,6 +109,14 @@ func WithInsecure(insecure bool) Option {
 func WithSessionToken(token string) Option {
 	return func(c *Client) {
 		c.sessionToken = token
+	}
+}
+
+// WithDERPTunnelToken sets the signed DERP tunnel JWT (org binding cryptographically enforced).
+// When set, this is preferred over session token for registration.
+func WithDERPTunnelToken(token string) Option {
+	return func(c *Client) {
+		c.derpTunnelToken = token
 	}
 }
 
@@ -243,9 +252,13 @@ func (c *Client) Close() {
 func (c *Client) sendRegistration() error {
 	regPayload := map[string]interface{}{
 		"device_id":     c.deviceID,
-		"peer_type":    "client",
-		"session_token": c.sessionToken,
-		"capabilities": c.capabilities,
+		"peer_type":     "client",
+		"capabilities":  c.capabilities,
+	}
+	if c.derpTunnelToken != "" {
+		regPayload["derp_tunnel_token"] = c.derpTunnelToken
+	} else {
+		regPayload["session_token"] = c.sessionToken
 	}
 	dataBytes, err := json.Marshal(regPayload)
 	if err != nil {
@@ -278,7 +291,8 @@ func (c *Client) send(payload map[string]interface{}) error {
 }
 
 // SendRouteRequest sends a route_request to create a tunnel route (source=this client, target=targetClient).
-func (c *Client) SendRouteRequest(organizationID string, targetClient string, externalPort, targetPort int, protocol string) error {
+// Returns the routeID for use with SendTrafficData.
+func (c *Client) SendRouteRequest(organizationID string, targetClient string, externalPort, targetPort int, protocol string) (string, error) {
 	if protocol == "" {
 		protocol = "TCP"
 	}
@@ -292,14 +306,17 @@ func (c *Client) SendRouteRequest(organizationID string, targetClient string, ex
 		"protocol":        protocol,
 	})
 	if err != nil {
-		return err
+		return "", err
 	}
-	return c.send(map[string]interface{}{
+	if err := c.send(map[string]interface{}{
 		"type": "route_request",
 		"from": c.deviceID,
 		"to":   "server",
 		"data": data,
-	})
+	}); err != nil {
+		return "", err
+	}
+	return routeID, nil
 }
 
 // SendTrafficData sends traffic_data for a route (used by tunnel connect to forward bytes).

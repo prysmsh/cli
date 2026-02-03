@@ -3,12 +3,15 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
@@ -142,6 +145,12 @@ func runMeshConnect(cmd *cobra.Command) error {
 			ctx, cancel := context.WithCancel(cmd.Context())
 			defer cancel()
 
+			// Prefer signed DERP tunnel token (org binding cryptographically enforced)
+			var derpToken string
+			if tokResp, err := app.API.GetDERPTunnelToken(ctx, deviceID); err == nil && tokResp != nil && tokResp.Token != "" {
+				derpToken = tokResp.Token
+			}
+
 			capabilities := map[string]interface{}{
 				"platform":   "cli",
 				"features":   []string{"service_discovery", "health_check"},
@@ -164,12 +173,69 @@ func runMeshConnect(cmd *cobra.Command) error {
 			headers.Set("X-Session-ID", sess.SessionID)
 			headers.Set("X-Org-ID", fmt.Sprintf("%d", sess.Organization.ID))
 
-			client := derp.NewClient(relay, deviceID,
+			// Tunnel traffic: routeID -> local conn for exposed ports
+			routeConns := make(map[string]net.Conn)
+			routeConnsMu := sync.RWMutex{}
+			var derpClient *derp.Client
+
+			derpOpts := []derp.Option{
 				derp.WithHeaders(headers),
 				derp.WithCapabilities(capabilities),
 				derp.WithInsecure(app.InsecureTLS),
-				derp.WithSessionToken(sess.Token),
-			)
+				derp.WithTunnelTrafficHandler(func(routeID string, targetPort, _ int, data []byte) {
+					if data != nil {
+						// traffic_data: forward to local conn
+						routeConnsMu.RLock()
+						conn := routeConns[routeID]
+						routeConnsMu.RUnlock()
+						if conn != nil {
+							conn.Write(data)
+						}
+						return
+					}
+					// route_setup: dial localhost:targetPort and start forwarding
+					addr := fmt.Sprintf("127.0.0.1:%d", targetPort)
+					conn, err := net.Dial("tcp", addr)
+					if err != nil {
+						color.New(color.FgRed).Fprintf(os.Stderr, "tunnel dial %s: %v\n", addr, err)
+						return
+					}
+					routeConnsMu.Lock()
+					routeConns[routeID] = conn
+					routeConnsMu.Unlock()
+
+					go func() {
+						defer func() {
+							routeConnsMu.Lock()
+							delete(routeConns, routeID)
+							routeConnsMu.Unlock()
+							conn.Close()
+						}()
+						buf := make([]byte, 32*1024)
+						for {
+							n, err := conn.Read(buf)
+							if n > 0 {
+								if sendErr := derpClient.SendTrafficData(routeID, buf[:n]); sendErr != nil {
+									return
+								}
+							}
+							if err != nil {
+								if err != io.EOF {
+									color.New(color.FgHiBlack).Fprintf(os.Stderr, "tunnel read: %v\n", err)
+								}
+								return
+							}
+						}
+					}()
+				}),
+			}
+			if derpToken != "" {
+				derpOpts = append(derpOpts, derp.WithDERPTunnelToken(derpToken))
+			} else {
+				derpOpts = append(derpOpts, derp.WithSessionToken(sess.Token))
+			}
+			derpClient = derp.NewClient(relay, deviceID, derpOpts...)
+			client := derpClient
 
 			color.New(color.FgGreen).Printf("🔌 Joining DERP mesh as %s\n", deviceID)
 			color.New(color.FgHiBlack).Printf("Relay: %s\n", relay)

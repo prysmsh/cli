@@ -4,7 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/fatih/color"
@@ -101,7 +108,7 @@ func newTunnelConnectCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "connect",
 		Short: "Connect to a peer's exposed port",
-		Long:  "Connect to a peer's exposed port and forward traffic to a local port. Requires `prysm mesh connect` to be running.",
+		Long:  "Connect to a peer's exposed port and forward traffic to a local port. Establishes a DERP connection and TCP proxy.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if strings.TrimSpace(peerRef) == "" {
 				return errors.New("--peer is required")
@@ -111,10 +118,13 @@ func newTunnelConnectCommand() *cobra.Command {
 			}
 
 			app := MustApp()
-			ctx, cancel := context.WithTimeout(cmd.Context(), 20*time.Second)
+			ctx, cancel := context.WithCancel(cmd.Context())
 			defer cancel()
 
-			tunnels, err := app.API.ListTunnels(ctx, peerRef)
+			// Look up tunnel from API
+			listCtx, listCancel := context.WithTimeout(ctx, 20*time.Second)
+			tunnels, err := app.API.ListTunnels(listCtx, peerRef)
+			listCancel()
 			if err != nil {
 				return err
 			}
@@ -136,13 +146,139 @@ func newTunnelConnectCommand() *cobra.Command {
 				lp = port
 			}
 
-			color.New(color.FgGreen).Printf("Tunnel found: %s:%d -> localhost:%d\n", peerRef, port, lp)
+			sess, err := app.Sessions.Load()
+			if err != nil {
+				return err
+			}
+			if sess == nil {
+				return fmt.Errorf("no active session; run `prysm login`")
+			}
+
+			relay := app.Config.DERPServerURL
+			if relay == "" {
+				relay = sess.DERPServerURL
+			}
+			if relay == "" {
+				return fmt.Errorf("DERP relay URL not configured")
+			}
+
+			deviceID, err := derp.EnsureDeviceID(app.Config.HomeDir)
+			if err != nil {
+				return fmt.Errorf("ensure device id: %w", err)
+			}
+
+			// Prefer signed DERP tunnel token (org binding cryptographically enforced)
+			var derpToken string
+			if tokResp, err := app.API.GetDERPTunnelToken(ctx, deviceID); err == nil && tokResp != nil && tokResp.Token != "" {
+				derpToken = tokResp.Token
+			}
+
+			// Map routeID -> net.Conn for traffic_data forwarding
+			routeConns := make(map[string]net.Conn)
+			routeConnsMu := sync.RWMutex{}
+
+			headers := make(http.Header)
+			headers.Set("Authorization", "Bearer "+sess.Token)
+			headers.Set("X-Session-ID", sess.SessionID)
+			headers.Set("X-Org-ID", fmt.Sprintf("%d", sess.Organization.ID))
+
+			derpOpts := []derp.Option{
+				derp.WithHeaders(headers),
+				derp.WithInsecure(app.InsecureTLS),
+				derp.WithTunnelTrafficHandler(func(routeID string, _, _ int, data []byte) {
+					if data == nil {
+						return
+					}
+					routeConnsMu.RLock()
+					conn := routeConns[routeID]
+					routeConnsMu.RUnlock()
+					if conn != nil {
+						conn.Write(data)
+					}
+				}),
+			}
+			if derpToken != "" {
+				derpOpts = append(derpOpts, derp.WithDERPTunnelToken(derpToken))
+			} else {
+				derpOpts = append(derpOpts, derp.WithSessionToken(sess.Token))
+			}
+			client := derp.NewClient(relay, deviceID, derpOpts...)
+
+			listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", lp))
+			if err != nil {
+				return fmt.Errorf("listen on localhost:%d: %w", lp, err)
+			}
+			defer listener.Close()
+
+			color.New(color.FgGreen).Printf("Tunnel: %s:%d -> localhost:%d\n", peerRef, port, lp)
 			fmt.Printf("  Tunnel ID: %d\n", match.ID)
-			fmt.Printf("  External port: %d\n", match.ExternalPort)
-			fmt.Printf("  Status: %s\n", match.Status)
-			color.New(color.FgHiBlack).Printf("\nEnsure `prysm mesh connect` is running, then connect to localhost:%d to reach %s:%d\n", lp, peerRef, port)
-			color.New(color.FgHiBlack).Printf("Full TCP proxy via DERP requires tunnel traffic support (coming soon).\n")
-			return nil
+			fmt.Printf("  Connect to localhost:%d to reach %s:%d\n", lp, peerRef, port)
+
+			targetClient := "device_" + peerRef
+			orgID := fmt.Sprintf("%d", match.OrganizationID)
+
+			go func() {
+				for {
+					conn, err := listener.Accept()
+					if err != nil {
+						return
+					}
+					routeID, err := client.SendRouteRequest(orgID, targetClient, match.ExternalPort, match.Port, "TCP")
+					if err != nil {
+						color.New(color.FgRed).Fprintf(os.Stderr, "route request failed: %v\n", err)
+						conn.Close()
+						continue
+					}
+					routeConnsMu.Lock()
+					routeConns[routeID] = conn
+					routeConnsMu.Unlock()
+
+					go func() {
+						defer func() {
+							routeConnsMu.Lock()
+							delete(routeConns, routeID)
+							routeConnsMu.Unlock()
+							conn.Close()
+						}()
+						buf := make([]byte, 32*1024)
+						for {
+							n, err := conn.Read(buf)
+							if n > 0 {
+								if sendErr := client.SendTrafficData(routeID, buf[:n]); sendErr != nil {
+									return
+								}
+							}
+							if err != nil {
+								if err != io.EOF {
+									color.New(color.FgHiBlack).Fprintf(os.Stderr, "tunnel read: %v\n", err)
+								}
+								return
+							}
+						}
+					}()
+				}
+			}()
+
+			errCh := make(chan error, 1)
+			go func() {
+				errCh <- client.Run(ctx)
+			}()
+
+			sigCh := make(chan os.Signal, 1)
+			signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+			defer signal.Stop(sigCh)
+
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case sig := <-sigCh:
+				color.New(color.FgYellow).Printf("Received %s, closing tunnel...\n", sig)
+				client.Close()
+				return nil
+			case err := <-errCh:
+				client.Close()
+				return err
+			}
 		},
 	}
 

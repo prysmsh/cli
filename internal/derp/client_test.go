@@ -99,7 +99,7 @@ func TestNewClientWithTunnelTrafficHandler(t *testing.T) {
 
 func TestSendRouteRequestWithoutConnection(t *testing.T) {
 	client := NewClient("wss://derp.example.com", "dev-1")
-	err := client.SendRouteRequest("1", "device_abc", 30000, 5432, "TCP")
+	_, err := client.SendRouteRequest("1", "device_abc", 30000, 5432, "TCP")
 	if err == nil {
 		t.Fatal("expected error when sending without connection")
 	}

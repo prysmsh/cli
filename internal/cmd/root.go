@@ -96,6 +96,7 @@ func init() {
 		newLogoutCommand(),
 		newSessionCommand(),
 		newConnectCommand(),
+		newCredentialCommand(),
 		newMeshCommand(),
 		newTunnelCommand(),
 		newAuditCommand(),
