@@ -1,7 +1,11 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
+	"io"
 	"net/url"
 	"time"
 )
@@ -120,4 +124,77 @@ func (lr *LoginResponse) ExpiresAt() time.Time {
 		return time.Time{}
 	}
 	return time.Unix(lr.ExpiresAtUnix, 0)
+}
+
+// DeviceCodeResponse is the response from POST /auth/device/code.
+type DeviceCodeResponse struct {
+	DeviceCode              string `json:"device_code"`
+	UserCode                string `json:"user_code"`
+	VerificationURI         string `json:"verification_uri"`
+	VerificationURIComplete string `json:"verification_uri_complete"`
+	ExpiresIn               int    `json:"expires_in"`
+	Interval                int    `json:"interval"`
+}
+
+// DeviceTokenRequest is the request body for POST /auth/device/token.
+type DeviceTokenRequest struct {
+	DeviceCode string `json:"device_code"`
+	GrantType  string `json:"grant_type"`
+}
+
+// DeviceTokenResponse is the response from POST /auth/device/token.
+type DeviceTokenResponse struct {
+	Token     string `json:"token"`
+	ExpiresAt int64  `json:"expires_at"`
+	Error     string `json:"error"`
+}
+
+// RequestDeviceCode initiates the device authorization flow.
+func (c *Client) RequestDeviceCode(ctx context.Context) (*DeviceCodeResponse, error) {
+	body := struct {
+		ClientID string `json:"client_id"`
+	}{ClientID: "prysm-cli"}
+	var resp DeviceCodeResponse
+	if _, err := c.Do(ctx, "POST", "/auth/device/code", body, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// PollDeviceToken performs a single poll for the device token.
+// It returns the parsed response (which may contain an Error field for
+// authorization_pending, slow_down, access_denied, or expired_token).
+// A non-nil Go error is returned only for network/transport failures.
+func (c *Client) PollDeviceToken(ctx context.Context, deviceCode string) (*DeviceTokenResponse, error) {
+	payload := DeviceTokenRequest{
+		DeviceCode: deviceCode,
+		GrantType:  "urn:ietf:params:oauth:grant-type:device_code",
+	}
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(payload); err != nil {
+		return nil, fmt.Errorf("encode device token request: %w", err)
+	}
+
+	req, err := c.newRequest(ctx, "POST", "/auth/device/token", payload)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, fmt.Errorf("poll device token: %w", err)
+	}
+	defer func() {
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}()
+
+	var tokenResp DeviceTokenResponse
+	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
+		return nil, fmt.Errorf("decode device token response: %w", err)
+	}
+	return &tokenResp, nil
 }

@@ -61,12 +61,20 @@ func newSessionRefreshCommand() *cobra.Command {
 	var useGitHub bool
 	var useApple bool
 	var useEmail bool
+	var useDeviceCode bool
 
 	refreshCmd := &cobra.Command{
 		Use:   "refresh",
 		Short: "Refresh the current session by re-authenticating",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := MustApp()
+
+			if useDeviceCode {
+				if useGitHub || useApple || useEmail {
+					return fmt.Errorf("--device-code cannot be combined with --github, --apple, or --email")
+				}
+				return runDeviceCodeLogin(cmd.Context(), app)
+			}
 
 			provider := ""
 			if useGitHub {
@@ -84,6 +92,7 @@ func newSessionRefreshCommand() *cobra.Command {
 	refreshCmd.Flags().BoolVar(&useGitHub, "github", false, "open GitHub sign-in directly")
 	refreshCmd.Flags().BoolVar(&useApple, "apple", false, "open Apple sign-in directly")
 	refreshCmd.Flags().BoolVar(&useEmail, "email", false, "open email/password sign-in")
+	refreshCmd.Flags().BoolVar(&useDeviceCode, "device-code", false, "use device code flow for headless environments (SSH, containers)")
 
 	return refreshCmd
 }

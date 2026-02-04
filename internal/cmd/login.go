@@ -25,18 +25,25 @@ const oauthCallbackPort = 4208
 
 func newLoginCommand() *cobra.Command {
 	var (
-		useGitHub bool
-		useApple  bool
+		useGitHub     bool
+		useApple      bool
+		useEmail      bool
+		useDeviceCode bool
 	)
-
-	var useEmail bool
 
 	cmd := &cobra.Command{
 		Use:   "login",
 		Short: "Authenticate to the Prysm control plane",
-		Long:  "Opens the browser to sign in. Defaults to the web login page; use --github or --apple for direct OAuth, --email for email/password.",
+		Long:  "Opens the browser to sign in. Defaults to the web login page; use --github or --apple for direct OAuth, --email for email/password, or --device-code for headless environments.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := MustApp()
+
+			if useDeviceCode {
+				if useGitHub || useApple || useEmail {
+					return fmt.Errorf("--device-code cannot be combined with --github, --apple, or --email")
+				}
+				return runDeviceCodeLogin(cmd.Context(), app)
+			}
 
 			provider := ""
 			if useGitHub {
@@ -54,6 +61,7 @@ func newLoginCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&useGitHub, "github", false, "open GitHub sign-in directly")
 	cmd.Flags().BoolVar(&useApple, "apple", false, "open Apple sign-in directly")
 	cmd.Flags().BoolVar(&useEmail, "email", false, "open email/password sign-in")
+	cmd.Flags().BoolVar(&useDeviceCode, "device-code", false, "use device code flow for headless environments (SSH, containers)")
 
 	return cmd
 }
@@ -224,6 +232,123 @@ func runOAuthLogin(ctx context.Context, app *App, provider string) error {
 		return fmt.Errorf("login timed out after %v — complete sign-in in the browser, or ensure localhost:%d is reachable", timeout, oauthCallbackPort)
 	case <-ctx.Done():
 		return ctx.Err()
+	}
+}
+
+// runDeviceCodeLogin performs the OAuth Device Authorization Grant flow (RFC 8628).
+// This is designed for headless environments where a browser cannot be opened locally.
+func runDeviceCodeLogin(ctx context.Context, app *App) error {
+	printDebug("Starting device code login flow")
+
+	dcResp, err := app.API.RequestDeviceCode(ctx)
+	if err != nil {
+		return fmt.Errorf("request device code: %w", err)
+	}
+	printDebug("Device code response: user_code=%s, expires_in=%d, interval=%d", dcResp.UserCode, dcResp.ExpiresIn, dcResp.Interval)
+
+	fmt.Fprintln(color.Error)
+	color.New(color.FgCyan).Fprintln(color.Error, "To sign in, open this URL on any device:")
+	fmt.Fprintf(color.Error, "\n    %s\n\n", dcResp.VerificationURI)
+	color.New(color.FgCyan).Fprintln(color.Error, "Then enter the code:")
+	color.New(color.FgWhite, color.Bold).Fprintf(color.Error, "\n    %s\n\n", dcResp.UserCode)
+
+	// Best-effort: try to open the browser to the pre-filled URL.
+	if dcResp.VerificationURIComplete != "" {
+		_ = openBrowser(dcResp.VerificationURIComplete)
+	}
+
+	interval := time.Duration(dcResp.Interval) * time.Second
+	if interval == 0 {
+		interval = 5 * time.Second
+	}
+	expiresIn := time.Duration(dcResp.ExpiresIn) * time.Second
+	if expiresIn == 0 {
+		expiresIn = 15 * time.Minute
+	}
+
+	fmt.Fprintf(color.Error, "Waiting for authorization... (expires in %d minutes)\n", int(expiresIn.Minutes()))
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	deadline := time.After(expiresIn)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline:
+			return fmt.Errorf("device code expired — please run `prysm login --device-code` again")
+		case <-ticker.C:
+			printDebug("Polling device token (interval=%v)", interval)
+			tokenResp, err := app.API.PollDeviceToken(ctx, dcResp.DeviceCode)
+			if err != nil {
+				return fmt.Errorf("poll device token: %w", err)
+			}
+
+			switch tokenResp.Error {
+			case "":
+				// Success — save session using the same pattern as runOAuthLogin.
+				app.API.SetToken(tokenResp.Token)
+				profileCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+				defer cancel()
+				profile, err := app.API.GetProfile(profileCtx)
+				if err != nil {
+					return fmt.Errorf("fetch profile after login: %w", err)
+				}
+				orgID := int64(0)
+				orgName := ""
+				if len(profile.Organizations) > 0 {
+					orgID = profile.Organizations[0].ID
+					orgName = profile.Organizations[0].Name
+				}
+				sess := &session.Session{
+					Token:         tokenResp.Token,
+					Email:         profile.User.Email,
+					ExpiresAtUnix: tokenResp.ExpiresAt,
+					User: session.SessionUser{
+						ID:         profile.User.ID,
+						Name:       profile.User.Name,
+						Email:      profile.User.Email,
+						Role:       profile.User.Role,
+						MFAEnabled: profile.User.MFAEnabled,
+					},
+					Organization: session.SessionOrg{
+						ID:   orgID,
+						Name: orgName,
+					},
+					APIBaseURL:    app.Config.APIBaseURL,
+					ComplianceURL: app.Config.ComplianceURL,
+					DERPServerURL: app.Config.DERPServerURL,
+					OutputFormat:  app.OutputFormat,
+				}
+				if err := app.Sessions.Save(sess); err != nil {
+					return err
+				}
+				color.New(color.FgGreen).Printf("✅ Login successful — welcome, %s (%s)\n", profile.User.Name, profile.User.Email)
+				return nil
+
+			case "authorization_pending":
+				// Expected — keep polling.
+				continue
+
+			case "slow_down":
+				// Server asked us to back off — increase interval by 5s.
+				interval += 5 * time.Second
+				ticker.Stop()
+				ticker = time.NewTicker(interval)
+				printDebug("Slowing down poll interval to %v", interval)
+				continue
+
+			case "access_denied":
+				return fmt.Errorf("authorization denied — the request was rejected")
+
+			case "expired_token":
+				return fmt.Errorf("device code expired — please run `prysm login --device-code` again")
+
+			default:
+				return fmt.Errorf("device authorization failed: %s", tokenResp.Error)
+			}
+		}
 	}
 }
 
