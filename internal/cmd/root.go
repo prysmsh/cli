@@ -14,18 +14,18 @@ import (
 
 	"github.com/warp-run/prysm-cli/internal/api"
 	"github.com/warp-run/prysm-cli/internal/config"
+	"github.com/warp-run/prysm-cli/internal/plugin"
 	"github.com/warp-run/prysm-cli/internal/session"
+	"github.com/warp-run/prysm-cli/plugins/onboard"
 )
 
 var (
 	rootCmd = &cobra.Command{
-		Use:           "prysm",
-		Short:         "Prysm zero-trust infrastructure access CLI",
-		SilenceUsage:  true,
-		SilenceErrors: true,
-		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
-			return initApp(cmd)
-		},
+		Use:              "prysm",
+		Short:            "Prysm zero-trust infrastructure access CLI",
+		SilenceUsage:     true,
+		SilenceErrors:    true,
+		TraverseChildren: true,
 	}
 
 	cfgFile        string
@@ -36,11 +36,14 @@ var (
 	overrideFormat string
 	overrideHost   string
 	overrideDial   string
+	overrideToken  string
 	debugEnabled   bool
 	insecureTLS    bool
 
-	appOnce sync.Once
-	app     *App
+	appOnce       sync.Once
+	app           *App
+	pluginMgr     *plugin.Manager
+	onboardPlugin *onboard.OnboardPlugin
 )
 
 var version = "dev"
@@ -59,6 +62,11 @@ type App struct {
 
 // Execute runs the root command.
 func Execute() error {
+	defer func() {
+		if pluginMgr != nil {
+			pluginMgr.Shutdown()
+		}
+	}()
 	return rootCmd.Execute()
 }
 
@@ -75,6 +83,10 @@ func init() {
 		color.NoColor = false
 	})
 
+	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error {
+		return initApp(cmd)
+	}
+
 	rootCmd.Version = version
 	rootCmd.SetVersionTemplate("{{.Name}} version {{.Version}}\n")
 
@@ -86,6 +98,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&overrideComp, "compliance-url", "", "override compliance API URL")
 	rootCmd.PersistentFlags().StringVar(&overrideDERP, "derp-url", "", "override DERP relay URL")
 	rootCmd.PersistentFlags().StringVar(&overrideFormat, "format", "", "set default output format")
+	rootCmd.PersistentFlags().StringVar(&overrideToken, "token", "", "authentication token (overrides session; can also use PRYSM_TOKEN env var)")
 	rootCmd.PersistentFlags().BoolVar(&debugEnabled, "debug", false, "enable debug logging")
 	rootCmd.PersistentFlags().BoolVar(&insecureTLS, "insecure", false, "skip TLS certificate verification when connecting to the API")
 
@@ -105,7 +118,16 @@ func init() {
 		newClustersCommand(),
 		newSecurityCommand(),
 		newHoneypotsCommand(),
+		newAIAgentsCommand(),
+		newPluginCommand(),
 	)
+
+	// Register builtin plugin commands eagerly so Cobra can route them.
+	// Host services are set later in initPluginManager (PersistentPreRunE).
+	onboardPlugin = onboard.New(nil)
+	for _, spec := range onboardPlugin.Manifest().Commands {
+		rootCmd.AddCommand(plugin.BuildCobraCommand(spec, onboardPlugin))
+	}
 }
 
 func newCompletionCommand() *cobra.Command {
@@ -227,24 +249,66 @@ func initApp(cmd *cobra.Command) error {
 	}
 
 	if cmd.Name() != "login" {
-		sess, err := app.Sessions.Load()
-		if err == nil && sess != nil {
-			if sess.APIBaseURL != "" && !strings.EqualFold(sess.APIBaseURL, app.Config.APIBaseURL) {
-				app.Config.APIBaseURL = sess.APIBaseURL
-				app.API = api.NewClient(app.Config.APIBaseURL,
-					api.WithTimeout(30*time.Second),
-					api.WithUserAgent("prysm-cli/0.2"),
-					api.WithDebug(app.Debug),
-					api.WithHostOverride(app.HostOverride),
-					api.WithInsecureSkipVerify(app.InsecureTLS),
-					api.WithDialAddress(app.DialOverride),
-				)
+		// Token precedence: --token flag > PRYSM_TOKEN env > session file
+		token := overrideToken
+		if token == "" {
+			token = os.Getenv("PRYSM_TOKEN")
+		}
+
+		if token != "" {
+			// Use explicit token from flag or env var
+			app.API.SetToken(token)
+		} else {
+			// Fall back to session file
+			sess, err := app.Sessions.Load()
+			if err == nil && sess != nil {
+				if sess.APIBaseURL != "" && !strings.EqualFold(sess.APIBaseURL, app.Config.APIBaseURL) {
+					app.Config.APIBaseURL = sess.APIBaseURL
+					app.API = api.NewClient(app.Config.APIBaseURL,
+						api.WithTimeout(30*time.Second),
+						api.WithUserAgent("prysm-cli/0.2"),
+						api.WithDebug(app.Debug),
+						api.WithHostOverride(app.HostOverride),
+						api.WithInsecureSkipVerify(app.InsecureTLS),
+						api.WithDialAddress(app.DialOverride),
+					)
+				}
+				app.API.SetToken(sess.Token)
 			}
-			app.API.SetToken(sess.Token)
 		}
 	}
 
+	// Initialize plugin system (only once, after app is ready)
+	initPluginManager()
+
 	return nil
+}
+
+// initPluginManager initialises host services on builtin plugins (whose Cobra
+// commands were already registered in init()) and discovers external plugins.
+func initPluginManager() {
+	if pluginMgr != nil {
+		return
+	}
+
+	appCtx := &plugin.AppContext{
+		Config:   app.Config,
+		Sessions: app.Sessions,
+		API:      app.API,
+		Format:   app.OutputFormat,
+		Debug:    app.Debug,
+	}
+	hostSvc := plugin.NewBuiltinHostServices(appCtx)
+
+	// Wire host services into the eagerly-created builtin plugin.
+	onboardPlugin.SetHost(hostSvc)
+
+	pluginMgr = plugin.NewManager(hostSvc, app.Config.HomeDir, app.Debug)
+	pluginMgr.RegisterBuiltin("onboard", onboardPlugin)
+
+	// Discover and register external plugins
+	pluginMgr.DiscoverExternalPlugins()
+	pluginMgr.RegisterCommands(rootCmd)
 }
 
 func printDebug(format string, args ...interface{}) {
