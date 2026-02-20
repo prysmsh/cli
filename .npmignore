@@ -1,0 +1,28 @@
+# Source and build
+*.go
+go.mod
+go.sum
+Makefile
+dist/
+prysm
+*.exe
+
+# Scripts and tooling
+scripts/
+.github/
+*.sh
+
+# Git and IDE
+.git/
+.gitignore
+.idea/
+.vscode/
+
+# Docs and dev (keep only what package needs)
+*.md
+!README.md
+
+# Test and CI
+*_test.go
+testdata/
+coverage.*
