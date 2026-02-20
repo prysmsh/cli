@@ -72,6 +72,23 @@ func TestListRoutesWithClusterFilter(t *testing.T) {
 	}
 }
 
+func TestCreateRoute_Error(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		w.Write([]byte(`{"error":"route name exists","code":"CONFLICT"}`))
+	}))
+	defer srv.Close()
+
+	client := api.NewClient(srv.URL)
+	client.SetToken("token")
+	_, err := client.CreateRoute(context.Background(), api.RouteCreateRequest{
+		Name: "dup", ClusterID: 1, ServiceName: "svc", ServicePort: 80, ExternalPort: 30080, Protocol: "TCP",
+	})
+	if err == nil {
+		t.Fatal("expected error from CreateRoute")
+	}
+}
+
 func TestCreateRoute_ResponseBody(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{

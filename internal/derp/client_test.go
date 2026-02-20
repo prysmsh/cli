@@ -185,7 +185,7 @@ func TestSendRouteRequestWithConnection(t *testing.T) {
 	defer srv.Close()
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
 
-	client := NewClient(wsURL, "dev-1", WithSessionToken("tok"))
+	client := NewClient(wsURL, "dev-1", WithSessionToken("tok"), WithLogLevel(LogDebug))
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 

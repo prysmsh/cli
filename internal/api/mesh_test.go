@@ -51,6 +51,21 @@ func TestRegisterMeshNode(t *testing.T) {
 	}
 }
 
+func TestListMeshNodes_Error(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		w.Write([]byte(`{"error":"forbidden"}`))
+	}))
+	defer srv.Close()
+
+	client := api.NewClient(srv.URL)
+	client.SetToken("token")
+	_, err := client.ListMeshNodes(context.Background())
+	if err == nil {
+		t.Fatal("expected error from ListMeshNodes")
+	}
+}
+
 func TestListMeshNodes(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "GET" || !strings.Contains(r.URL.Path, "/mesh/nodes") {

@@ -8,4 +8,4 @@ if ! command -v gitleaks &>/dev/null; then
   exit 1
 fi
 
-gitleaks git --pre-commit --staged --verbose
+gitleaks protect --staged --verbose

@@ -264,6 +264,39 @@ func TestClientWithHostOverride(t *testing.T) {
 	}
 }
 
+func TestDo_WithDebug(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	client := api.NewClient(srv.URL, api.WithDebug(true))
+	_, err := client.Do(context.Background(), "GET", "/path", nil, &struct{}{})
+	if err != nil {
+		t.Fatalf("Do with debug: %v", err)
+	}
+}
+
+func TestDo_WithQueryString(t *testing.T) {
+	var capturedRawQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedRawQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	client := api.NewClient(srv.URL)
+	_, err := client.Do(context.Background(), "GET", "/path?filter=active&limit=10", nil, &struct{}{})
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	if capturedRawQuery != "filter=active&limit=10" {
+		t.Errorf("RawQuery = %q, want filter=active&limit=10", capturedRawQuery)
+	}
+}
+
 func TestClientMethodNormalization(t *testing.T) {
 	var capturedMethod string
 

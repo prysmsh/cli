@@ -280,6 +280,39 @@ func TestConfigMergeDefaultSession(t *testing.T) {
 	}
 }
 
+func TestConfigMerge_EmptyStringsNoOverwrite(t *testing.T) {
+	base := Config{
+		APIBaseURL:    "https://base.api.com",
+		ComplianceURL: "https://base.compliance.com",
+		HomeDir:       "/base/home",
+		OutputFormat:  "table",
+		Organization:  "base-org",
+	}
+	other := Config{
+		APIBaseURL:    "",
+		ComplianceURL: "",
+		HomeDir:       "",
+		OutputFormat:  "",
+		Organization:  "",
+	}
+	base.merge(other)
+	if base.APIBaseURL != "https://base.api.com" {
+		t.Errorf("APIBaseURL overwritten: %q", base.APIBaseURL)
+	}
+	if base.ComplianceURL != "https://base.compliance.com" {
+		t.Errorf("ComplianceURL overwritten: %q", base.ComplianceURL)
+	}
+	if base.HomeDir != "/base/home" {
+		t.Errorf("HomeDir overwritten: %q", base.HomeDir)
+	}
+	if base.OutputFormat != "table" {
+		t.Errorf("OutputFormat overwritten: %q", base.OutputFormat)
+	}
+	if base.Organization != "base-org" {
+		t.Errorf("Organization overwritten: %q", base.Organization)
+	}
+}
+
 func TestLoadPathIsDirectory(t *testing.T) {
 	tmpDir := t.TempDir()
 	// Pass a directory as config path; ReadFile will fail with a non-IsNotExist error

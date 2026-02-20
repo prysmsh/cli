@@ -293,6 +293,27 @@ func TestBuiltinHostServices_PromptConfirmNo(t *testing.T) {
 	}
 }
 
+func TestBuiltinHostServices_PromptConfirmEOF(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldStdin := os.Stdin
+	os.Stdin = r
+	defer func() { os.Stdin = oldStdin }()
+	w.Close() // EOF immediately, no input
+
+	app := &AppContext{}
+	h := NewBuiltinHostServices(app)
+	got, err := h.PromptConfirm(context.Background(), "Continue?")
+	if err != nil {
+		t.Fatalf("PromptConfirm on EOF: %v", err)
+	}
+	if got {
+		t.Error("PromptConfirm() on EOF = true, want false")
+	}
+}
+
 func TestBuiltinHostServices_doAPIRaw(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
