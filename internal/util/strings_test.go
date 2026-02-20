@@ -1,6 +1,9 @@
 package util
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func TestQuoteYAMLString(t *testing.T) {
 	tests := []struct {
@@ -156,6 +159,26 @@ func TestSafePathSegment(t *testing.T) {
 				t.Errorf("SafePathSegment(%q) err = %v, wantErr %v", tt.input, err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestSafePathSegment_ErrUnsafePathSegment(t *testing.T) {
+	err := SafePathSegment("../../x")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, ErrUnsafePathSegment) {
+		t.Errorf("err = %v, want ErrUnsafePathSegment", err)
+	}
+}
+
+func TestSafePathSegment_EmptyError(t *testing.T) {
+	err := SafePathSegment("")
+	if err == nil {
+		t.Fatal("expected error for empty segment")
+	}
+	if err.Error() != "empty path segment" {
+		t.Errorf("error = %v", err.Error())
 	}
 }
 

@@ -271,6 +271,15 @@ api_url: https://api.example.com
 	}
 }
 
+func TestConfigMergeDefaultSession(t *testing.T) {
+	base := Config{APIBaseURL: "https://api.example.com", DefaultSession: ""}
+	other := Config{DefaultSession: "prod"}
+	base.merge(other)
+	if base.DefaultSession != "prod" {
+		t.Errorf("DefaultSession = %q, want prod", base.DefaultSession)
+	}
+}
+
 func TestLoadPathIsDirectory(t *testing.T) {
 	tmpDir := t.TempDir()
 	// Pass a directory as config path; ReadFile will fail with a non-IsNotExist error

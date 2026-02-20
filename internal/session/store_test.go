@@ -3,6 +3,7 @@ package session
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -338,5 +339,46 @@ func TestStoreLoadCorruptedFile(t *testing.T) {
 	_, err := store.Load()
 	if err == nil {
 		t.Fatal("Expected error loading corrupted JSON")
+	}
+}
+
+func TestStoreSave_MkdirAllFails(t *testing.T) {
+	// Parent is a file, so MkdirAll(parent) fails
+	dir := t.TempDir()
+	parentFile := filepath.Join(dir, "parent")
+	if err := os.WriteFile(parentFile, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(parentFile, "session.json")
+	store := NewStore(path)
+
+	err := store.Save(&Session{Token: "t", Email: "e@e.com"})
+	if err == nil {
+		t.Fatal("expected error when parent is not a directory")
+	}
+	if !strings.Contains(err.Error(), "ensure session directory") {
+		t.Errorf("error = %v", err)
+	}
+}
+
+func TestStoreLoadWithZeroSavedAt(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.json")
+	// Session JSON without saved_at (zero value) — backfill from file ModTime
+	body := `{"token":"t","email":"u@e.com","user":{"id":1,"name":"u","email":"u@e.com","role":"user","mfa_enabled":false},"organization":{"id":1,"name":"o"}}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	store := NewStore(path)
+	sess, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if sess == nil {
+		t.Fatal("expected session")
+	}
+	if sess.SavedAt.IsZero() {
+		t.Error("SavedAt should be backfilled from file ModTime")
 	}
 }

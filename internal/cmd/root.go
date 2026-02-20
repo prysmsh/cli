@@ -16,6 +16,7 @@ import (
 	"github.com/warp-run/prysm-cli/internal/config"
 	"github.com/warp-run/prysm-cli/internal/plugin"
 	"github.com/warp-run/prysm-cli/internal/session"
+	"github.com/warp-run/prysm-cli/internal/style"
 	"github.com/warp-run/prysm-cli/plugins/onboard"
 )
 
@@ -88,7 +89,7 @@ func init() {
 	}
 
 	rootCmd.Version = version
-	rootCmd.SetVersionTemplate("{{.Name}} version {{.Version}}\n")
+	rootCmd.SetVersionTemplate(style.RenderVersion(rootCmd.Name(), version) + "\n")
 
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $PRYSM_HOME/config.yaml)")
 	rootCmd.PersistentFlags().StringVar(&activeProfile, "profile", "default", "configuration profile")
@@ -120,6 +121,8 @@ func init() {
 		newHoneypotsCommand(),
 		newAIAgentsCommand(),
 		newPluginCommand(),
+		newDockerCommand(),
+		newUpdateCommand(),
 	)
 
 	// Register builtin plugin commands eagerly so Cobra can route them.

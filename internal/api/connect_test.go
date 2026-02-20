@@ -12,6 +12,45 @@ import (
 	"github.com/warp-run/prysm-cli/internal/api"
 )
 
+func TestConnectListClusters(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" || !strings.Contains(r.URL.Path, "/connect/k8s/clusters") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"clusters": []api.Cluster{
+				{ID: 1, Name: "cluster-a", Status: "connected"},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := api.NewClient(srv.URL)
+	client.SetToken("token")
+	clusters, err := client.ListClusters(context.Background())
+	if err != nil {
+		t.Fatalf("ListClusters: %v", err)
+	}
+	if len(clusters) != 1 || clusters[0].Name != "cluster-a" {
+		t.Errorf("clusters = %v", clusters)
+	}
+}
+
+func TestConnectListClusters_Error(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	client := api.NewClient(srv.URL)
+	_, err := client.ListClusters(context.Background())
+	if err == nil {
+		t.Fatal("expected error from ListClusters")
+	}
+}
+
 func TestEnableClusterExitRouter(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" || !strings.Contains(r.URL.Path, "/clusters/1/exit-router") {
@@ -50,7 +89,7 @@ func TestDisableClusterExitRouter(t *testing.T) {
 
 func TestConnectKubernetes(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "POST" || !strings.Contains(r.URL.Path, "/connect/k8s") {
+		if r.Method != "POST" || !strings.HasSuffix(r.URL.Path, "/connect/k8s") {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}

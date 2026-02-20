@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 
 	"github.com/warp-run/prysm-cli/internal/api"
@@ -165,6 +166,156 @@ func TestBuiltinHostServices_APIRequest_WithBody(t *testing.T) {
 	if got != want && got != want+"\n" {
 		t.Errorf("body = %q, want %q", got, want)
 	}
+}
+
+func TestBuiltinHostServices_Log(t *testing.T) {
+	app := &AppContext{Debug: false}
+	h := NewBuiltinHostServices(app)
+	ctx := context.Background()
+
+	levels := []struct {
+		level   LogLevel
+		message string
+	}{
+		{LogLevelInfo, "info msg"},
+		{LogLevelSuccess, "success msg"},
+		{LogLevelWarning, "warning msg"},
+		{LogLevelError, "error msg"},
+		{LogLevelPlain, "plain msg"},
+	}
+	for _, lv := range levels {
+		if err := h.Log(ctx, lv.level, lv.message); err != nil {
+			t.Errorf("Log(%v): %v", lv.level, err)
+		}
+	}
+
+	// Debug with Debug=false: no output but no error
+	app.Debug = false
+	if err := h.Log(ctx, LogLevelDebug, "debug off"); err != nil {
+		t.Errorf("Log(Debug): %v", err)
+	}
+	app.Debug = true
+	if err := h.Log(ctx, LogLevelDebug, "debug on"); err != nil {
+		t.Errorf("Log(Debug): %v", err)
+	}
+}
+
+func TestBuiltinHostServices_PromptInput(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldStdin := os.Stdin
+	os.Stdin = r
+	defer func() { os.Stdin = oldStdin }()
+
+	go func() {
+		w.WriteString("  typed value  \n")
+		w.Close()
+	}()
+
+	app := &AppContext{}
+	h := NewBuiltinHostServices(app)
+	got, err := h.PromptInput(context.Background(), "Label", false)
+	if err != nil {
+		t.Fatalf("PromptInput: %v", err)
+	}
+	if got != "typed value" {
+		t.Errorf("PromptInput() = %q, want typed value", got)
+	}
+}
+
+func TestBuiltinHostServices_PromptInputNoInput(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldStdin := os.Stdin
+	os.Stdin = r
+	defer func() { os.Stdin = oldStdin }()
+	w.Close()
+
+	app := &AppContext{}
+	h := NewBuiltinHostServices(app)
+	_, err = h.PromptInput(context.Background(), "Label", false)
+	if err == nil {
+		t.Error("PromptInput expected error on EOF")
+	}
+}
+
+func TestBuiltinHostServices_PromptConfirm(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldStdin := os.Stdin
+	os.Stdin = r
+	defer func() { os.Stdin = oldStdin }()
+
+	go func() {
+		w.WriteString("yes\n")
+		w.Close()
+	}()
+
+	app := &AppContext{}
+	h := NewBuiltinHostServices(app)
+	got, err := h.PromptConfirm(context.Background(), "Continue?")
+	if err != nil {
+		t.Fatalf("PromptConfirm: %v", err)
+	}
+	if !got {
+		t.Error("PromptConfirm() = false, want true")
+	}
+}
+
+func TestBuiltinHostServices_PromptConfirmNo(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldStdin := os.Stdin
+	os.Stdin = r
+	defer func() { os.Stdin = oldStdin }()
+
+	go func() {
+		w.WriteString("n\n")
+		w.Close()
+	}()
+
+	app := &AppContext{}
+	h := NewBuiltinHostServices(app)
+	got, err := h.PromptConfirm(context.Background(), "Continue?")
+	if err != nil {
+		t.Fatalf("PromptConfirm: %v", err)
+	}
+	if got {
+		t.Error("PromptConfirm() = true, want false")
+	}
+}
+
+func TestBuiltinHostServices_doAPIRaw(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	client := api.NewClient(srv.URL)
+	app := &AppContext{
+		Config:   &config.Config{APIBaseURL: srv.URL},
+		Sessions: session.NewStore("/tmp/session.json"),
+		API:      client,
+	}
+	h := NewBuiltinHostServices(app)
+
+	resp, err := h.doAPIRaw(context.Background(), "GET", "/", nil)
+	if err != nil {
+		t.Fatalf("doAPIRaw: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("resp is nil")
+	}
+	resp.Body.Close()
 }
 
 func TestBuiltinHostServices_APIRequest_APIError(t *testing.T) {

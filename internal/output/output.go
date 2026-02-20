@@ -9,7 +9,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/fatih/color"
+	"github.com/warp-run/prysm-cli/internal/style"
 )
 
 // Format represents the output format.
@@ -67,25 +67,25 @@ func (w *Writer) Table() *tabwriter.Writer {
 // Success prints a success message with a green checkmark.
 func (w *Writer) Success(format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
-	color.New(color.FgGreen).Fprintf(w.out, "✅ %s\n", msg)
+	fmt.Fprintln(w.out, style.Success.Render("✅ "+msg))
 }
 
 // Warning prints a warning message in yellow.
 func (w *Writer) Warning(format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
-	color.New(color.FgYellow).Fprintf(w.err, "⚠️  %s\n", msg)
+	fmt.Fprintln(w.err, style.Warning.Render("⚠️  "+msg))
 }
 
 // Error prints an error message in red.
 func (w *Writer) Error(format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
-	color.New(color.FgRed).Fprintf(w.err, "❌ %s\n", msg)
+	fmt.Fprintln(w.err, style.Error.Render("❌ "+msg))
 }
 
 // Info prints an info message in cyan.
 func (w *Writer) Info(format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
-	color.New(color.FgCyan).Fprintf(w.out, "ℹ️  %s\n", msg)
+	fmt.Fprintln(w.out, style.Info.Render("ℹ️  "+msg))
 }
 
 // Debug prints a debug message in gray (only if debug is enabled).
@@ -94,7 +94,7 @@ func (w *Writer) Debug(enabled bool, format string, args ...interface{}) {
 		return
 	}
 	msg := fmt.Sprintf(format, args...)
-	color.New(color.FgHiBlack).Fprintf(w.err, "[debug] %s\n", msg)
+	fmt.Fprintln(w.err, style.MutedStyle.Render("[debug] "+msg))
 }
 
 // Print writes to stdout.
@@ -112,11 +112,11 @@ func StatusColor(status string) string {
 	lower := strings.ToLower(status)
 	switch lower {
 	case "connected", "healthy", "active", "running", "success":
-		return color.HiGreenString(status)
+		return style.Success.Render(status)
 	case "disconnected", "unhealthy", "failed", "error", "critical":
-		return color.HiRedString(status)
+		return style.Error.Render(status)
 	case "pending", "warning", "degraded":
-		return color.HiYellowString(status)
+		return style.Warning.Render(status)
 	default:
 		return status
 	}

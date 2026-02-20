@@ -1,4 +1,4 @@
-.PHONY: build install clean test test-coverage e2e publish publish-tap release publish-homebrew publish-npm
+.PHONY: build install clean test test-coverage e2e publish publish-tap release publish-homebrew publish-npm unpublish setup-hooks
 
 BINARY := prysm
 
@@ -51,3 +51,16 @@ publish-homebrew:
 publish-npm:
 	@if [ -z "$(VERSION)" ]; then echo "Usage: make publish-npm VERSION=x.y.z"; exit 1; fi
 	@./scripts/publish_npm.sh $(VERSION)
+
+# Unpublish a version: delete GitHub release/tag and deprecate npm packages.
+# Run: make unpublish VERSION=x.y.z
+# Use: make unpublish VERSION=x.y.z DEPRECATE_ONLY=1 if npm publish was >72h ago.
+unpublish:
+	@if [ -z "$(VERSION)" ]; then echo "Usage: make unpublish VERSION=x.y.z"; exit 1; fi
+	@./scripts/unpublish.sh $(VERSION) $(if $(SKIP_GITHUB),--skip-github) $(if $(SKIP_NPM),--skip-npm) $(if $(DEPRECATE_ONLY),--deprecate-only)
+
+# Install git pre-commit hook for secret scanning (requires gitleaks).
+setup-hooks:
+	cp scripts/pre-commit .git/hooks/pre-commit
+	chmod +x .git/hooks/pre-commit
+	@echo "Pre-commit hook installed."

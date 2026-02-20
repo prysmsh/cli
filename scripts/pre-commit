@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if ! command -v gitleaks &>/dev/null; then
+  echo "gitleaks not found. Install it: https://github.com/gitleaks/gitleaks#installing"
+  echo "  brew install gitleaks        # macOS"
+  echo "  go install github.com/gitleaks/gitleaks/v8@latest  # Go"
+  exit 1
+fi
+
+gitleaks git --pre-commit --staged --verbose

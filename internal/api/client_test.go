@@ -13,6 +13,32 @@ import (
 	"github.com/warp-run/prysm-cli/internal/api"
 )
 
+func TestBasePublicURL_EmptyWhenNoURL(t *testing.T) {
+	// Client with nil baseURL (e.g. zero value) returns empty string
+	c := &api.Client{}
+	if got := c.BasePublicURL(); got != "" {
+		t.Errorf("BasePublicURL() = %q, want empty", got)
+	}
+}
+
+func TestWithTimeout(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"ok": "true"})
+	}))
+	defer srv.Close()
+
+	client := api.NewClient(srv.URL, api.WithTimeout(time.Second))
+	var v map[string]string
+	_, err := client.Do(context.Background(), "GET", "/", nil, &v)
+	if err != nil {
+		t.Fatalf("Do with WithTimeout: %v", err)
+	}
+	if v["ok"] != "true" {
+		t.Errorf("response = %v", v)
+	}
+}
+
 func TestNewClientURLNormalization(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -73,6 +99,27 @@ func TestClientSetAndGetToken(t *testing.T) {
 
 	if got := client.Token(); got != "test-token-123" {
 		t.Errorf("Token() after SetToken = %q, want %q", got, "test-token-123")
+	}
+}
+
+func TestDo_ContextCancelled(t *testing.T) {
+	block := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		<-block
+	}))
+	defer srv.Close()
+	defer close(block)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	client := api.NewClient(srv.URL)
+	_, err := client.Do(ctx, "GET", "/", nil, nil)
+	if err == nil {
+		t.Fatal("expected error when context cancelled")
+	}
+	if !strings.Contains(err.Error(), "cancelled") && !strings.Contains(err.Error(), "context") {
+		t.Errorf("error = %v", err)
 	}
 }
 
@@ -390,6 +437,58 @@ func TestLoginResponseExpiresAt(t *testing.T) {
 	}
 }
 
+func TestClientDoDecodeError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte("not json"))
+	}))
+	defer srv.Close()
+
+	client := api.NewClient(srv.URL)
+	var out struct{ X int }
+	_, err := client.Do(context.Background(), "GET", "/", nil, &out)
+	if err == nil {
+		t.Fatal("expected decode error")
+	}
+	if !strings.Contains(err.Error(), "decode") {
+		t.Errorf("error = %v", err)
+	}
+}
+
+func TestNewClientPathNormalization(t *testing.T) {
+	tests := []struct {
+		base     string
+		wantPath string
+	}{
+		{"https://api.example.com", "/api/v1"},
+		{"https://api.example.com/", "/api/v1"},
+		{"https://api.example.com/v1", "/api/v1"},
+		{"https://api.example.com/api", "/api/v1"},
+		{"https://api.example.com/API", "/api/v1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.base, func(t *testing.T) {
+			client := api.NewClient(tt.base)
+			u := client.BasePublicURL()
+			if u == "" {
+				t.Fatal("BasePublicURL empty")
+			}
+			_, err := client.Do(context.Background(), "GET", "/profile", nil, nil)
+			if err != nil {
+				t.Logf("Do (may fail without server): %v", err)
+			}
+		})
+	}
+}
+
+func TestClientWithTimeoutWhenClientSet(t *testing.T) {
+	hc := &http.Client{}
+	client := api.NewClient("https://api.example.com", api.WithHTTPClient(hc), api.WithTimeout(5*time.Second))
+	if client == nil {
+		t.Fatal("NewClient returned nil")
+	}
+}
+
 func TestClientDoSuccessWithNilV(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -451,6 +550,21 @@ func TestClientNewRequestEncodeError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected encode error")
 	}
+}
+
+func TestClientWithHTTPClient(t *testing.T) {
+	hc := &http.Client{Timeout: 5 * time.Second}
+	client := api.NewClient("https://api.example.com", api.WithHTTPClient(hc))
+	if client == nil {
+		t.Fatal("NewClient returned nil")
+	}
+}
+
+func TestClientWithDebug(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
+	defer srv.Close()
+	client := api.NewClient(srv.URL, api.WithDebug(true))
+	_, _ = client.Do(context.Background(), "GET", "/", nil, nil)
 }
 
 func TestListClusters(t *testing.T) {

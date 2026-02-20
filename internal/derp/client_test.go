@@ -139,6 +139,115 @@ func TestClientClose(t *testing.T) {
 	client.Close()
 }
 
+func TestClientCloseWithConnection(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		// Read registration then wait
+		conn.ReadJSON(&map[string]interface{}{})
+		conn.ReadMessage() // block until close
+	}))
+	defer srv.Close()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+
+	client := NewClient(wsURL, "dev-1", WithSessionToken("tok"))
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	go func() { _ = client.Run(ctx) }()
+	time.Sleep(100 * time.Millisecond) // let connection establish
+	client.Close()
+	time.Sleep(50 * time.Millisecond)
+}
+
+func TestSendRouteRequestWithConnection(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	var gotRouteRequest bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		conn.ReadJSON(&map[string]interface{}{}) // registration
+		// Read next message (route_request)
+		var msg map[string]interface{}
+		if err := conn.ReadJSON(&msg); err == nil {
+			if msg["type"] == "route_request" {
+				gotRouteRequest = true
+			}
+		}
+	}))
+	defer srv.Close()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+
+	client := NewClient(wsURL, "dev-1", WithSessionToken("tok"))
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	go func() { _ = client.Run(ctx) }()
+	time.Sleep(150 * time.Millisecond)
+
+	routeID, err := client.SendRouteRequest("org1", "target-dev", 30000, 5432, "TCP")
+	if err != nil {
+		t.Fatalf("SendRouteRequest: %v", err)
+	}
+	if routeID == "" {
+		t.Error("routeID empty")
+	}
+	client.Close()
+	time.Sleep(50 * time.Millisecond)
+	if !gotRouteRequest {
+		t.Error("server did not receive route_request")
+	}
+}
+
+func TestSendTrafficDataWithConnection(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	var gotTraffic bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		conn.ReadJSON(&map[string]interface{}{}) // registration
+		var msg map[string]interface{}
+		for i := 0; i < 2; i++ {
+			if err := conn.ReadJSON(&msg); err != nil {
+				return
+			}
+			if msg["type"] == "traffic_data" {
+				gotTraffic = true
+				return
+			}
+		}
+	}))
+	defer srv.Close()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+
+	client := NewClient(wsURL, "dev-1", WithSessionToken("tok"))
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	go func() { _ = client.Run(ctx) }()
+	time.Sleep(150 * time.Millisecond)
+
+	err := client.SendTrafficData("route-1", []byte("payload"))
+	if err != nil {
+		t.Fatalf("SendTrafficData: %v", err)
+	}
+	client.Close()
+	time.Sleep(50 * time.Millisecond)
+	if !gotTraffic {
+		t.Error("server did not receive traffic_data")
+	}
+}
+
 func TestGetString(t *testing.T) {
 	tests := []struct {
 		name  string

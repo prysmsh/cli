@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/warp-run/prysm-cli/internal/api"
@@ -68,6 +69,40 @@ func TestListRoutesWithClusterFilter(t *testing.T) {
 	}
 	if captured.query != "cluster_id=42" {
 		t.Fatalf("unexpected query: %s", captured.query)
+	}
+}
+
+func TestCreateRoute_ResponseBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"route": map[string]any{
+				"id":            1,
+				"name":          "r1",
+				"description":  "desc",
+				"cluster_id":    10,
+				"service_name": "svc",
+				"service_port": 80,
+				"external_port": 30080,
+				"protocol":      "TCP",
+				"status":       "active",
+				"external_url": "derp:30080",
+				"created_at":   "2024-01-01T00:00:00Z",
+				"updated_at":   "2024-01-01T00:00:00Z",
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := api.NewClient(srv.URL)
+	route, err := client.CreateRoute(context.Background(), api.RouteCreateRequest{
+		Name: "r1", Description: "desc", ClusterID: 10,
+		ServiceName: "svc", ServicePort: 80, ExternalPort: 30080, Protocol: "TCP",
+	})
+	if err != nil {
+		t.Fatalf("CreateRoute: %v", err)
+	}
+	if route.Name != "r1" || route.ClusterID != 10 {
+		t.Errorf("route = %+v", route)
 	}
 }
 
@@ -176,5 +211,62 @@ func TestSuggestRoutePort(t *testing.T) {
 	}
 	if port != 30123 {
 		t.Fatalf("expected port 30123, got %d", port)
+	}
+}
+
+func TestListRoutesWithoutClusterID(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/routes" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if r.URL.RawQuery != "" {
+			t.Fatalf("expected no query, got %s", r.URL.RawQuery)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"routes": []map[string]any{}, "total": 0})
+	}))
+	defer srv.Close()
+
+	client := api.NewClient(srv.URL)
+	routes, err := client.ListRoutes(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("ListRoutes error: %v", err)
+	}
+	if len(routes) != 0 {
+		t.Fatalf("expected 0 routes, got %d", len(routes))
+	}
+}
+
+func TestSuggestRoutePortWithoutClusterID(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.RawQuery != "" {
+			t.Fatalf("expected no query, got %s", r.URL.RawQuery)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"suggested_port": 30000})
+	}))
+	defer srv.Close()
+
+	client := api.NewClient(srv.URL)
+	port, err := client.SuggestRoutePort(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("SuggestRoutePort error: %v", err)
+	}
+	if port != 30000 {
+		t.Fatalf("expected port 30000, got %d", port)
+	}
+}
+
+func TestSuggestRoutePortZeroError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"suggested_port": 0})
+	}))
+	defer srv.Close()
+
+	client := api.NewClient(srv.URL)
+	_, err := client.SuggestRoutePort(context.Background(), nil)
+	if err == nil {
+		t.Fatal("expected error when suggested_port is 0")
+	}
+	if !strings.Contains(err.Error(), "no suggested port") {
+		t.Errorf("error = %v", err)
 	}
 }

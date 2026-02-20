@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/warp-run/prysm-cli/internal/api"
@@ -240,5 +241,58 @@ func TestDeleteTunnel(t *testing.T) {
 	err := client.DeleteTunnel(context.Background(), 1)
 	if err != nil {
 		t.Fatalf("DeleteTunnel error: %v", err)
+	}
+}
+
+func TestDeleteTunnelByID(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			t.Fatalf("unexpected method: %s", r.Method)
+		}
+		if !strings.Contains(r.URL.Path, "/tunnels/99") {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	client := api.NewClient(srv.URL)
+	err := client.DeleteTunnelByID(context.Background(), "99")
+	if err != nil {
+		t.Fatalf("DeleteTunnelByID error: %v", err)
+	}
+}
+
+func TestDeleteTunnelByIDInvalid(t *testing.T) {
+	client := api.NewClient("https://api.example.com")
+	err := client.DeleteTunnelByID(context.Background(), "not-a-number")
+	if err == nil {
+		t.Fatal("expected error for invalid tunnel id")
+	}
+	if !strings.Contains(err.Error(), "invalid tunnel id") {
+		t.Errorf("error = %v", err)
+	}
+}
+
+func TestCreateTunnelAPIErrorInBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"tunnel": nil,
+			"error":  "cluster not found",
+		})
+	}))
+	defer srv.Close()
+
+	client := api.NewClient(srv.URL)
+	_, err := client.CreateTunnel(context.Background(), api.TunnelCreateRequest{
+		Port:           5432,
+		TargetDeviceID: "dev-1",
+	})
+	if err == nil {
+		t.Fatal("expected error when API returns error field")
+	}
+	if !strings.Contains(err.Error(), "cluster not found") {
+		t.Errorf("error = %v", err)
 	}
 }
