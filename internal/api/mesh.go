@@ -25,7 +25,8 @@ type MeshNode struct {
 	UpdatedAt      time.Time              `json:"updated_at"`
 	CreatedAt      time.Time              `json:"created_at"`
 	DERPClientID   string                 `json:"derp_client_id"`
-	WGAddress      string                 `json:"wg_address,omitempty"`
+	WGAddress        string                 `json:"wg_address,omitempty"`
+	AdvertisedCIDRs  []string               `json:"advertised_cidrs,omitempty"`
 }
 
 type meshListResponse struct {
@@ -59,6 +60,16 @@ func (c *Client) ListMeshNodes(ctx context.Context) ([]MeshNode, error) {
 func (c *Client) PingMeshNode(ctx context.Context, deviceID string) error {
 	payload := map[string]string{"device_id": deviceID}
 	_, err := c.Do(ctx, "POST", "/mesh/nodes/ping", payload, nil)
+	return err
+}
+
+// DisconnectMeshNode marks a mesh peer as disconnected on the backend.
+func (c *Client) DisconnectMeshNode(ctx context.Context, deviceID string) error {
+	payload := map[string]interface{}{
+		"device_id": deviceID,
+		"status":    "disconnected",
+	}
+	_, err := c.Do(ctx, "POST", "/mesh/nodes/register", payload, nil)
 	return err
 }
 

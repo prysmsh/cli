@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/warp-run/prysm-cli/internal/api"
+	"github.com/prysmsh/cli/internal/api"
 )
 
 func TestLogin_APIError(t *testing.T) {
@@ -25,6 +25,37 @@ func TestLogin_APIError(t *testing.T) {
 	}
 	if client.Token() != "" {
 		t.Error("token should not be set on login failure")
+	}
+}
+
+func TestLoginResponse_ExpiresAt(t *testing.T) {
+	var nilResp *api.LoginResponse
+	if got := nilResp.ExpiresAt(); !got.IsZero() {
+		t.Errorf("ExpiresAt(nil) = %v, want zero", got)
+	}
+	zeroResp := &api.LoginResponse{ExpiresAtUnix: 0}
+	if got := zeroResp.ExpiresAt(); !got.IsZero() {
+		t.Errorf("ExpiresAt(zero) = %v, want zero", got)
+	}
+	withTime := &api.LoginResponse{ExpiresAtUnix: 1234567890}
+	got := withTime.ExpiresAt()
+	if got.Unix() != 1234567890 {
+		t.Errorf("ExpiresAt() = %v", got)
+	}
+}
+
+func TestGetDERPTunnelToken_Error(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"error":"unauthorized"}`))
+	}))
+	defer srv.Close()
+
+	client := api.NewClient(srv.URL)
+	client.SetToken("token")
+	_, err := client.GetDERPTunnelToken(context.Background(), "dev-1")
+	if err == nil {
+		t.Fatal("expected error from GetDERPTunnelToken")
 	}
 }
 
@@ -79,6 +110,20 @@ func TestGetProfile(t *testing.T) {
 	}
 }
 
+func TestRequestDeviceCode_Error(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		w.Write([]byte(`{"error":"rate_limited"}`))
+	}))
+	defer srv.Close()
+
+	client := api.NewClient(srv.URL)
+	_, err := client.RequestDeviceCode(context.Background())
+	if err == nil {
+		t.Fatal("expected error from RequestDeviceCode")
+	}
+}
+
 func TestRequestDeviceCode(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" || !strings.Contains(r.URL.Path, "/auth/device/code") {
@@ -104,6 +149,23 @@ func TestRequestDeviceCode(t *testing.T) {
 	}
 	if resp.DeviceCode != "dc-123" || resp.UserCode != "ABCD-1234" {
 		t.Errorf("resp = %+v", resp)
+	}
+}
+
+func TestPollDeviceToken_DecodeError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("not valid json"))
+	}))
+	defer srv.Close()
+
+	client := api.NewClient(srv.URL)
+	_, err := client.PollDeviceToken(context.Background(), "bad-code")
+	if err == nil {
+		t.Fatal("expected error from PollDeviceToken when body is not JSON")
+	}
+	if !strings.Contains(err.Error(), "decode") {
+		t.Errorf("error = %v", err)
 	}
 }
 

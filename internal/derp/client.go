@@ -13,8 +13,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fatih/color"
 	"github.com/gorilla/websocket"
+
+	"github.com/prysmsh/cli/internal/style"
 	"github.com/prysmsh/pkg/tlsutil"
 )
 
@@ -41,6 +42,10 @@ const (
 // For traffic_data: routeID and data are set.
 type TunnelTrafficHandler func(routeID string, targetPort, externalPort int, data []byte)
 
+// RouteResponseHandler is called when a route_response message is received.
+// routeID identifies the route; status is "ok" or an error string.
+type RouteResponseHandler func(routeID, status string)
+
 // Client manages a DERP websocket connection.
 type Client struct {
 	url             string
@@ -60,6 +65,9 @@ type Client struct {
 
 	// TunnelTrafficHandler is optional; when set, route_setup and traffic_data are forwarded.
 	TunnelTrafficHandler TunnelTrafficHandler
+
+	// RouteResponseHandler is optional; when set, route_response events are forwarded.
+	RouteResponseHandler RouteResponseHandler
 }
 
 // LogLevel controls verbosity.
@@ -127,6 +135,13 @@ func WithTunnelTrafficHandler(h TunnelTrafficHandler) Option {
 	}
 }
 
+// WithRouteResponseHandler sets the callback for route_response messages.
+func WithRouteResponseHandler(h RouteResponseHandler) Option {
+	return func(c *Client) {
+		c.RouteResponseHandler = h
+	}
+}
+
 // NewClient constructs a DERP websocket client.
 func NewClient(url, deviceID string, opts ...Option) *Client {
 	tlsConfig := &tls.Config{}
@@ -174,7 +189,7 @@ func (c *Client) Run(ctx context.Context) error {
 	c.conn = conn
 	c.mu.Unlock()
 
-	c.log(color.HiGreenString("Connected to DERP relay %s", c.url))
+	c.log(style.Success.Render(fmt.Sprintf("Connected to DERP relay %s", c.url)))
 
 	if err := c.sendRegistration(); err != nil {
 		return fmt.Errorf("send registration: %w", err)
@@ -290,7 +305,7 @@ func (c *Client) send(payload map[string]interface{}) error {
 	}
 	if c.logLevel == LogDebug {
 		if data, err := json.Marshal(payload); err == nil {
-			c.log(color.HiBlackString(">>> %s", data))
+			c.log(style.MutedStyle.Render(fmt.Sprintf(">>> %s", data)))
 		}
 	}
 	return nil
@@ -321,6 +336,29 @@ func (c *Client) SendRouteRequest(organizationID string, targetClient string, ex
 	return routeID, nil
 }
 
+// SendExitRouteRequest sends a route_request with route_type "exit" to tunnel
+// traffic through an exit-enabled peer. targetAddress is the destination the
+// exit peer should connect to (e.g. "example.com:443").
+func (c *Client) SendExitRouteRequest(orgID, targetClient, targetAddress string) (string, error) {
+	routeID := fmt.Sprintf("exit_%d", time.Now().UnixNano())
+	if err := c.send(map[string]interface{}{
+		"type": "route_request",
+		"from": c.deviceID,
+		"to":   "server",
+		"data": map[string]interface{}{
+			"route_id":        routeID,
+			"target_client":   targetClient,
+			"organization_id": orgID,
+			"route_type":      "exit",
+			"target_address":  targetAddress,
+			"protocol":        "TCP",
+		},
+	}); err != nil {
+		return "", err
+	}
+	return routeID, nil
+}
+
 // SendTrafficData sends traffic_data for a route (used by tunnel connect to forward bytes).
 func (c *Client) SendTrafficData(routeID string, data []byte) error {
 	return c.send(map[string]interface{}{
@@ -340,21 +378,21 @@ func (c *Client) handleMessage(msg map[string]interface{}) {
 	switch eventType {
 	case EventPeerList:
 		count := len(getSlice(msg["peers"]))
-		c.log(color.HiCyanString("Mesh peers online: %d", count))
+		c.log(style.Info.Render(fmt.Sprintf("Mesh peers online: %d", count)))
 	case EventPeerJoined:
 		peer := msg["peer"]
-		c.log(color.HiGreenString("Peer joined: %s", summarizePeer(peer)))
+		c.log(style.Success.Render(fmt.Sprintf("Peer joined: %s", summarizePeer(peer))))
 	case EventPeerLeft:
-		c.log(color.HiYellowString("Peer left: %s", getString(msg["peer_id"])))
+		c.log(style.Warning.Render(fmt.Sprintf("Peer left: %s", getString(msg["peer_id"]))))
 	case EventServiceDiscovery:
-		c.log(color.HiBlueString("Service discovery update received"))
+		c.log(style.BlueStyle.Render("Service discovery update received"))
 	case EventRelayMessage:
-		c.log(color.WhiteString("Relay message: %s", summarizeMessage(msg["message"])))
+		c.log(style.Bold.Render(fmt.Sprintf("Relay message: %s", summarizeMessage(msg["message"]))))
 	case EventStatsUpdate:
-		c.log(color.HiMagentaString("Mesh stats updated"))
+		c.log(style.MagentaStyle.Render("Mesh stats updated"))
 	case EventPong:
 		if c.logLevel == LogDebug {
-			c.log(color.HiBlackString("< pong >"))
+			c.log(style.MutedStyle.Render("< pong >"))
 		}
 	case EventRouteSetup:
 		c.handleRouteSetup(msg)
@@ -365,13 +403,13 @@ func (c *Client) handleMessage(msg map[string]interface{}) {
 	case EventError:
 		code, detail := parseErrorPayload(msg["data"])
 		if detail != "" {
-			c.log(color.HiRedString("DERP error: %s — %s", code, detail))
+			c.log(style.Error.Render(fmt.Sprintf("DERP error: %s — %s", code, detail)))
 		} else {
-			c.log(color.HiRedString("DERP error: %s", code))
+			c.log(style.Error.Render(fmt.Sprintf("DERP error: %s", code)))
 		}
 	default:
 		if c.logLevel == LogDebug {
-			c.log(color.HiBlackString("Unhandled message: %+v", msg))
+			c.log(style.MutedStyle.Render(fmt.Sprintf("Unhandled message: %+v", msg)))
 		}
 	}
 }
@@ -405,14 +443,14 @@ func (c *Client) handleRouteSetup(msg map[string]interface{}) {
 	}
 	if err := json.Unmarshal(dataBytes, &payload); err != nil {
 		if c.logLevel == LogDebug {
-			c.log(color.HiBlackString("route_setup parse error: %v", err))
+			c.log(style.MutedStyle.Render(fmt.Sprintf("route_setup parse error: %v", err)))
 		}
 		return
 	}
 	if c.TunnelTrafficHandler != nil {
 		c.TunnelTrafficHandler(payload.RouteID, payload.TargetPort, payload.ExternalPort, nil)
 	} else if c.logLevel == LogDebug {
-		c.log(color.HiBlueString("route_setup: %s target_port=%d ext_port=%d", payload.RouteID, payload.TargetPort, payload.ExternalPort))
+		c.log(style.BlueStyle.Render(fmt.Sprintf("route_setup: %s target_port=%d ext_port=%d", payload.RouteID, payload.TargetPort, payload.ExternalPort)))
 	}
 
 	// Send route_response back so the backend knows the route is ready
@@ -429,8 +467,43 @@ func (c *Client) handleRouteSetup(msg map[string]interface{}) {
 }
 
 func (c *Client) handleRouteResponse(msg map[string]interface{}) {
-	if c.logLevel == LogDebug {
-		c.log(color.HiBlueString("route_response received"))
+	data := msg["data"]
+	if data == nil {
+		if c.logLevel == LogDebug {
+			c.log(style.BlueStyle.Render("route_response received (no data)"))
+		}
+		return
+	}
+
+	var payload struct {
+		RouteID string `json:"route_id"`
+		Status  string `json:"status"`
+		Error   string `json:"error"`
+	}
+	var dataBytes []byte
+	switch v := data.(type) {
+	case string:
+		dataBytes = []byte(v)
+	case []byte:
+		dataBytes = v
+	default:
+		dataBytes, _ = json.Marshal(data)
+	}
+	if err := json.Unmarshal(dataBytes, &payload); err != nil {
+		if c.logLevel == LogDebug {
+			c.log(style.MutedStyle.Render(fmt.Sprintf("route_response parse error: %v", err)))
+		}
+		return
+	}
+
+	statusForHandler := payload.Status
+	if payload.Status == "failed" && payload.Error != "" {
+		statusForHandler = payload.Status + ": " + payload.Error
+	}
+	if c.RouteResponseHandler != nil {
+		c.RouteResponseHandler(payload.RouteID, statusForHandler)
+	} else if c.logLevel == LogDebug {
+		c.log(style.BlueStyle.Render(fmt.Sprintf("route_response: %s status=%s", payload.RouteID, payload.Status)))
 	}
 }
 
@@ -454,14 +527,14 @@ func (c *Client) handleTrafficData(msg map[string]interface{}) {
 	}
 	if err := json.Unmarshal(dataBytes, &payload); err != nil {
 		if c.logLevel == LogDebug {
-			c.log(color.HiBlackString("traffic_data parse error: %v", err))
+			c.log(style.MutedStyle.Render(fmt.Sprintf("traffic_data parse error: %v", err)))
 		}
 		return
 	}
 	if c.TunnelTrafficHandler != nil {
 		c.TunnelTrafficHandler(payload.RouteID, 0, 0, payload.Data)
 	} else if c.logLevel == LogDebug {
-		c.log(color.HiBlackString("traffic_data: route=%s len=%d", payload.RouteID, len(payload.Data)))
+		c.log(style.MutedStyle.Render(fmt.Sprintf("traffic_data: route=%s len=%d", payload.RouteID, len(payload.Data))))
 	}
 }
 

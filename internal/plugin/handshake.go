@@ -6,7 +6,7 @@ import (
 	goplugin "github.com/hashicorp/go-plugin"
 	"google.golang.org/grpc"
 
-	pluginv1 "github.com/warp-run/prysm-cli/proto/plugin/v1"
+	pluginv1 "github.com/prysmsh/cli/proto/plugin/v1"
 )
 
 // HandshakeConfig is the shared handshake for all Prysm plugins.

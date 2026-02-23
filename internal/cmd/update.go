@@ -3,8 +3,12 @@ package cmd
 import (
 	"archive/tar"
 	"archive/zip"
+	"bufio"
 	"bytes"
 	"compress/gzip"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,7 +20,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/warp-run/prysm-cli/internal/style"
+	"github.com/prysmsh/cli/internal/style"
+	"github.com/prysmsh/cli/internal/ui"
 )
 
 // githubRelease is the subset of the GitHub releases API we care about.
@@ -60,10 +65,12 @@ func runUpdate(checkOnly bool) error {
 		return nil
 	}
 
-	fmt.Println(style.Info.Render("Checking for updates..."))
-
-	rel, err := fetchLatestRelease()
-	if err != nil {
+	var rel *githubRelease
+	if err := ui.WithSpinner("Checking for updates...", func() error {
+		var fetchErr error
+		rel, fetchErr = fetchLatestRelease()
+		return fetchErr
+	}); err != nil {
 		return fmt.Errorf("check for updates: %w", err)
 	}
 
@@ -98,22 +105,47 @@ func runUpdate(checkOnly bool) error {
 		return fmt.Errorf("no release asset found for %s/%s (expected %s)", runtime.GOOS, runtime.GOARCH, assetName)
 	}
 
-	fmt.Println(style.Info.Render(fmt.Sprintf("Downloading v%s...", latestVersion)))
+	var archiveData []byte
+	if err := ui.WithSpinner(fmt.Sprintf("Downloading v%s...", latestVersion), func() error {
+		resp, err := http.Get(downloadURL)
+		if err != nil {
+			return fmt.Errorf("download release: %w", err)
+		}
+		defer resp.Body.Close()
 
-	resp, err := http.Get(downloadURL)
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("download release: HTTP %d", resp.StatusCode)
+		}
+
+		archiveData, err = io.ReadAll(resp.Body)
+		if err != nil {
+			return fmt.Errorf("read release archive: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+
+	archiveHash := sha256.Sum256(archiveData)
+	archiveHashHex := hex.EncodeToString(archiveHash[:])
+
+	// Verify archive checksum (required).
+	checksumURL, checksumAssetName := findChecksumAsset(rel.Assets)
+	if checksumURL == "" {
+		return fmt.Errorf("release is missing a checksum asset (expected SHA256SUMS)")
+	}
+	checksums, err := fetchChecksums(checksumURL)
 	if err != nil {
-		return fmt.Errorf("download release: %w", err)
+		return fmt.Errorf("fetch checksums: %w", err)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("download release: HTTP %d", resp.StatusCode)
+	expectedHash, ok := checksums[assetName]
+	if !ok {
+		return fmt.Errorf("no checksum found for %s in %s", assetName, checksumAssetName)
 	}
-
-	archiveData, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("read release archive: %w", err)
+	if err := verifyChecksum(archiveData, expectedHash); err != nil {
+		return fmt.Errorf("integrity check failed for %s: %w", assetName, err)
 	}
+	fmt.Println(style.Success.Render(fmt.Sprintf("Checksum verified (%s): %s", checksumAssetName, archiveHashHex)))
 
 	binaryData, err := extractBinary(archiveData, assetName)
 	if err != nil {
@@ -134,6 +166,106 @@ func runUpdate(checkOnly bool) error {
 	}
 
 	fmt.Println(style.Success.Render(fmt.Sprintf("Updated to v%s.", latestVersion)))
+	return nil
+}
+
+// findChecksumAsset returns the download URL and asset name for a checksum
+// file if one is present in the release.
+func findChecksumAsset(assets []githubAsset) (string, string) {
+	// Prefer canonical name first.
+	for _, a := range assets {
+		if a.Name == "SHA256SUMS" {
+			return a.BrowserDownloadURL, a.Name
+		}
+	}
+	for _, a := range assets {
+		n := strings.ToLower(strings.TrimSpace(a.Name))
+		switch n {
+		case "sha256sums.txt", "checksums.txt", "checksums", "sha256sums":
+			return a.BrowserDownloadURL, a.Name
+		}
+	}
+	return "", ""
+}
+
+// fetchChecksums downloads a SHA256SUMS file and parses it into a filename→hash map.
+func fetchChecksums(url string) (map[string]string, error) {
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("download checksums: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("download checksums: HTTP %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read checksums: %w", err)
+	}
+
+	return parseChecksums(string(body))
+}
+
+// parseChecksums parses checksum lines into a filename->hash map.
+// Supported formats:
+//   - "<hash>  <filename>" (GNU coreutils)
+//   - "<hash> *<filename>" (sha256sum --binary)
+//   - "<hash> <filename>"  (single-space variant)
+func parseChecksums(data string) (map[string]string, error) {
+	result := make(map[string]string)
+	scanner := bufio.NewScanner(strings.NewReader(data))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+
+		hash := strings.TrimSpace(fields[0])
+		if len(hash) != sha256.Size*2 {
+			continue
+		}
+		if _, err := hex.DecodeString(hash); err != nil {
+			continue
+		}
+
+		filename := strings.TrimSpace(fields[1])
+		filename = strings.TrimPrefix(filename, "*")
+		filename = strings.TrimPrefix(filename, "./")
+		if filename == "" {
+			continue
+		}
+
+		result[filename] = hash
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("scan checksums: %w", err)
+	}
+	if len(result) == 0 {
+		return nil, fmt.Errorf("no valid checksums found")
+	}
+	return result, nil
+}
+
+// verifyChecksum computes SHA256 of data and compares it against expectedHex
+// using constant-time comparison.
+func verifyChecksum(data []byte, expectedHex string) error {
+	expected, err := hex.DecodeString(expectedHex)
+	if err != nil {
+		return fmt.Errorf("invalid checksum hex %q: %w", expectedHex, err)
+	}
+	if len(expected) != sha256.Size {
+		return fmt.Errorf("invalid checksum length: got %d bytes, want %d", len(expected), sha256.Size)
+	}
+	actual := sha256.Sum256(data)
+	if subtle.ConstantTimeCompare(actual[:], expected) != 1 {
+		return fmt.Errorf("checksum mismatch: expected %s, got %x", expectedHex, actual)
+	}
 	return nil
 }
 

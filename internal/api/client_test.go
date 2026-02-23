@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/warp-run/prysm-cli/internal/api"
+	"github.com/prysmsh/cli/internal/api"
 )
 
 func TestBasePublicURL_EmptyWhenNoURL(t *testing.T) {
@@ -294,6 +294,44 @@ func TestDo_WithQueryString(t *testing.T) {
 	}
 	if capturedRawQuery != "filter=active&limit=10" {
 		t.Errorf("RawQuery = %q, want filter=active&limit=10", capturedRawQuery)
+	}
+}
+
+func TestDo_EndpointTrimmed(t *testing.T) {
+	var capturedPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	client := api.NewClient(srv.URL)
+	_, err := client.Do(context.Background(), "GET", "  /foo/bar  ", nil, &struct{}{})
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	if !strings.HasSuffix(capturedPath, "/foo/bar") {
+		t.Errorf("path = %q, expected /foo/bar", capturedPath)
+	}
+}
+
+func TestDo_DecodeError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("not valid json"))
+	}))
+	defer srv.Close()
+
+	client := api.NewClient(srv.URL)
+	var v struct{ X string }
+	_, err := client.Do(context.Background(), "GET", "/", nil, &v)
+	if err == nil {
+		t.Fatal("expected decode error")
+	}
+	if !strings.Contains(err.Error(), "decode") {
+		t.Errorf("error = %v", err)
 	}
 }
 

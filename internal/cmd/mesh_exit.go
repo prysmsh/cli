@@ -8,8 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fatih/color"
 	"github.com/spf13/cobra"
+
+	"github.com/prysmsh/cli/internal/style"
 )
 
 func newMeshExitCommand() *cobra.Command {
@@ -52,7 +53,7 @@ func newMeshExitEnableCommand() *cobra.Command {
 				if err := app.API.EnableMeshNodeExit(ctx, nodeID); err != nil {
 					return fmt.Errorf("enable exit node: %w", err)
 				}
-				color.New(color.FgGreen).Printf("✓ Exit node enabled for mesh node %d\n", nodeID)
+				fmt.Println(style.Success.Render(fmt.Sprintf("✓ Exit node enabled for mesh node %d", nodeID)))
 				return nil
 			}
 
@@ -60,7 +61,7 @@ func newMeshExitEnableCommand() *cobra.Command {
 			if err := app.API.SetMeshNodeExitByDeviceID(ctx, ref, true); err != nil {
 				return fmt.Errorf("enable exit node: %w", err)
 			}
-			color.New(color.FgGreen).Printf("✓ Exit node enabled for device %s\n", ref)
+			fmt.Println(style.Success.Render(fmt.Sprintf("✓ Exit node enabled for device %s", ref)))
 			return nil
 		},
 	}
@@ -93,14 +94,14 @@ func newMeshExitDisableCommand() *cobra.Command {
 				if err := app.API.DisableMeshNodeExit(ctx, nodeID); err != nil {
 					return fmt.Errorf("disable exit node: %w", err)
 				}
-				color.New(color.FgGreen).Printf("✓ Exit node disabled for mesh node %d\n", nodeID)
+				fmt.Println(style.Success.Render(fmt.Sprintf("✓ Exit node disabled for mesh node %d", nodeID)))
 				return nil
 			}
 
 			if err := app.API.SetMeshNodeExitByDeviceID(ctx, ref, false); err != nil {
 				return fmt.Errorf("disable exit node: %w", err)
 			}
-			color.New(color.FgGreen).Printf("✓ Exit node disabled for device %s\n", ref)
+			fmt.Println(style.Success.Render(fmt.Sprintf("✓ Exit node disabled for device %s", ref)))
 			return nil
 		},
 	}

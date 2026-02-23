@@ -10,12 +10,12 @@ import (
 	"os"
 	"strings"
 
-	"github.com/fatih/color"
 	"golang.org/x/term"
 
-	"github.com/warp-run/prysm-cli/internal/api"
-	"github.com/warp-run/prysm-cli/internal/config"
-	"github.com/warp-run/prysm-cli/internal/session"
+	"github.com/prysmsh/cli/internal/api"
+	"github.com/prysmsh/cli/internal/style"
+	"github.com/prysmsh/cli/internal/config"
+	"github.com/prysmsh/cli/internal/session"
 )
 
 // AppContext holds references to the CLI app state needed by host services.
@@ -92,19 +92,19 @@ func (h *BuiltinHostServices) GetConfig(ctx context.Context) (*HostConfig, error
 func (h *BuiltinHostServices) Log(ctx context.Context, level LogLevel, message string) error {
 	switch level {
 	case LogLevelSuccess:
-		color.New(color.FgGreen).Fprintln(os.Stderr, message)
+		fmt.Fprintln(os.Stderr, style.Success.Render(message))
 	case LogLevelWarning:
-		color.New(color.FgYellow).Fprintln(os.Stderr, message)
+		fmt.Fprintln(os.Stderr, style.Warning.Render(message))
 	case LogLevelError:
-		color.New(color.FgRed).Fprintln(os.Stderr, message)
+		fmt.Fprintln(os.Stderr, style.Error.Render(message))
 	case LogLevelDebug:
 		if h.app.Debug {
-			color.New(color.FgHiBlack).Fprintln(os.Stderr, "[debug]", message)
+			fmt.Fprintln(os.Stderr, style.MutedStyle.Render("[debug] "+message))
 		}
 	case LogLevelPlain:
 		fmt.Fprintln(os.Stdout, message)
 	default: // Info
-		color.New(color.FgCyan).Fprintln(os.Stderr, message)
+		fmt.Fprintln(os.Stderr, style.Info.Render(message))
 	}
 	return nil
 }

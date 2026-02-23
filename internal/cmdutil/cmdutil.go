@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/prysmsh/cli/internal/style"
 )
 
 // CommandBuilder helps construct cobra commands with consistent patterns.
@@ -90,7 +92,7 @@ func ContextWithTimeout(parent context.Context, timeout time.Duration) (context.
 	go func() {
 		select {
 		case <-signalChan:
-			fmt.Fprintf(os.Stderr, "\nInterrupted, cancelling...\n")
+			fmt.Fprintln(os.Stderr, style.Warning.Render("\nInterrupted, cancelling..."))
 			cancel()
 		case <-ctx.Done():
 		}

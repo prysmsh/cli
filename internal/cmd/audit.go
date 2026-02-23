@@ -8,8 +8,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fatih/color"
 	"github.com/spf13/cobra"
+
+	"github.com/prysmsh/cli/internal/style"
+	"github.com/prysmsh/cli/internal/ui"
 )
 
 func newAuditCommand() *cobra.Command {
@@ -64,14 +66,16 @@ func newAuditFrameworksCommand() *cobra.Command {
 
 			frameworks := extractFrameworks(payload)
 			if len(frameworks) == 0 {
-				color.New(color.FgYellow).Println("No compliance frameworks available.")
+				fmt.Println(style.Warning.Render("No compliance frameworks available."))
 				return nil
 			}
 
-			fmt.Printf("%-20s %-10s %-10s\n", "FRAMEWORK", "VERSION", "STATUS")
+			headers := []string{"FRAMEWORK", "VERSION", "STATUS"}
+			rows := make([][]string, 0, len(frameworks))
 			for _, fw := range frameworks {
-				fmt.Printf("%-20s %-10s %-10s\n", fw.Name, fw.Version, fw.Status)
+				rows = append(rows, []string{fw.Name, fw.Version, fw.Status})
 			}
+			ui.PrintTable(headers, rows)
 			return nil
 		},
 	}

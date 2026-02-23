@@ -160,3 +160,26 @@ func TestPromptConfirmNo(t *testing.T) {
 		t.Error("PromptConfirm with n want false")
 	}
 }
+
+func TestPromptConfirmNoWithYes(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldStdin := os.Stdin
+	os.Stdin = r
+	defer func() { os.Stdin = oldStdin }()
+
+	go func() {
+		w.WriteString("no\n")
+		w.Close()
+	}()
+
+	got, err := PromptConfirm("Continue?", true)
+	if err != nil {
+		t.Fatalf("PromptConfirm err = %v", err)
+	}
+	if got {
+		t.Error("PromptConfirm with no want false")
+	}
+}

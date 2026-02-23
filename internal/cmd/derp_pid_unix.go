@@ -24,8 +24,10 @@ func readDerpPidAndCheckRunning() (pid int, running bool) {
 	if err != nil || pid <= 0 {
 		return 0, false
 	}
-	if unix.Kill(pid, 0) != nil {
-		return pid, false
+	err = unix.Kill(pid, 0)
+	if err == nil || err == unix.EPERM {
+		// EPERM means the process exists but we lack permission to signal it.
+		return pid, true
 	}
-	return pid, true
+	return pid, false
 }

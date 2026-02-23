@@ -6,17 +6,21 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
-	"github.com/warp-run/prysm-cli/internal/api"
-	"github.com/warp-run/prysm-cli/internal/util"
+	"github.com/prysmsh/cli/internal/api"
+	"github.com/prysmsh/cli/internal/output"
+	"github.com/prysmsh/cli/internal/plugin"
+	"github.com/prysmsh/cli/internal/style"
+	"github.com/prysmsh/cli/internal/ui"
+	"github.com/prysmsh/cli/internal/util"
 )
 
 func newConnectCommand() *cobra.Command {
@@ -25,12 +29,81 @@ func newConnectCommand() *cobra.Command {
 		Short: "Establish access to managed infrastructure resources",
 	}
 
+	meshAlias := newMeshConnectCommand()
+	meshAlias.Use = "mesh"
+	meshAlias.Short = "Join the DERP mesh network"
+
 	connectCmd.AddCommand(
 		newConnectKubernetesCommand(),
+		newConnectSSHCommand(),
 		newConnectDevicesCommand(),
+		meshAlias,
 	)
 
 	return connectCmd
+}
+
+func newSSHCommand() *cobra.Command {
+	cmd := newConnectSSHCommand()
+	cmd.Use = "ssh <target> [-- <remote command>]"
+	cmd.Short = "Open an SSH session with policy checks and audit reason"
+	cmd.Long = "Open an SSH session via Prysm policy evaluation. The command records reason metadata and enforces access checks before launching ssh."
+	cmd.AddCommand(newSSHOnboardCommand())
+	return cmd
+}
+
+func newSSHOnboardCommand() *cobra.Command {
+	var withCollector bool
+
+	cmd := &cobra.Command{
+		Use:   "onboard",
+		Short: "Onboard an SSH-accessible host",
+		Long:  "Bootstrap a host for SSH access by running the Docker-host onboarding flow. This is equivalent to `prysm onboard docker`.",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if onboardPlugin == nil {
+				return fmt.Errorf("onboard plugin is not initialized")
+			}
+
+			subcommand := "docker"
+			if withCollector {
+				// Reuse the hidden docker-compose mode to force collector enablement.
+				subcommand = "docker-compose"
+			}
+
+			wd, _ := os.Getwd()
+			req := plugin.ExecuteRequest{
+				Args:       []string{subcommand},
+				WorkingDir: wd,
+			}
+
+			if app != nil {
+				if opts := pluginRequestOptions(); opts != nil {
+					ext := opts()
+					req.OutputFormat = ext.OutputFormat
+					req.Debug = ext.Debug
+					if len(ext.Env) > 0 {
+						req.Env = ext.Env
+					}
+				}
+			}
+
+			resp := onboardPlugin.Execute(cmd.Context(), req)
+			if resp.Stdout != "" {
+				fmt.Print(resp.Stdout)
+			}
+			if resp.Error != "" {
+				return fmt.Errorf("%s", resp.Error)
+			}
+			if resp.ExitCode != 0 {
+				os.Exit(resp.ExitCode)
+			}
+			return nil
+		},
+	}
+
+	cmd.Flags().BoolVar(&withCollector, "collector", false, "include eBPF collector in the generated compose stack")
+	return cmd
 }
 
 func newConnectKubernetesCommand() *cobra.Command {
@@ -43,13 +116,10 @@ func newConnectKubernetesCommand() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "k8s",
+		Use:   "kube [--cluster name-or-id]",
 		Short: "Issue a temporary kubeconfig for a managed Kubernetes cluster",
+		Long:  "Get a short-lived kubeconfig to access a cluster via kubectl. Use --cluster to pick by name or ID, or omit it for an interactive list. Example: prysm connect kube --cluster frank -o kubeconfig.yaml && kubectl --kubeconfig=kubeconfig.yaml get nodes",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if clusterRef == "" {
-				return errors.New("cluster reference is required (--cluster)")
-			}
-
 			app := MustApp()
 			ctx, cancel := context.WithTimeout(cmd.Context(), 45*time.Second)
 			defer cancel()
@@ -62,22 +132,42 @@ func newConnectKubernetesCommand() *cobra.Command {
 				return errors.New("no Kubernetes clusters available for your organization")
 			}
 
-			cluster, err := findCluster(clusters, clusterRef)
+			ref := clusterRef
+			if ref == "" {
+				fmt.Fprintln(os.Stderr, style.Bold.Render("Clusters (use name or ID with --cluster next time):"))
+				for _, c := range clusters {
+					status := output.StatusColor(c.Status)
+					fmt.Fprintf(os.Stderr, "  %d\t%s\t%s\n", c.ID, c.Name, status)
+				}
+				fmt.Fprintln(os.Stderr)
+				var promptErr error
+				ref, promptErr = util.PromptInput("Cluster (name or ID)")
+				if promptErr != nil {
+					return fmt.Errorf("cluster selection: %w", promptErr)
+				}
+				ref = strings.TrimSpace(ref)
+				if ref == "" {
+					return errors.New("cluster reference is required")
+				}
+			}
+
+			cluster, err := findCluster(clusters, ref)
 			if err != nil {
 				var b strings.Builder
 				fmt.Fprintf(&b, "%v\nAvailable clusters:\n", err)
 				for _, c := range clusters {
-					status := color.HiGreenString(c.Status)
-					if strings.ToLower(c.Status) != "connected" {
-						status = color.HiRedString(c.Status)
-					}
-					fmt.Fprintf(&b, "  - %d\t%s\t%s\n", c.ID, c.Name, status)
+					status := output.StatusColor(c.Status)
+					fmt.Fprintf(&b, "  %d  %s  %s\n", c.ID, c.Name, status)
 				}
 				return errors.New(b.String())
 			}
 
-			resp, err := app.API.ConnectKubernetes(ctx, cluster.ID, namespace, reason)
-			if err != nil {
+			var resp *api.ClusterConnectResponse
+			if err := ui.WithSpinner("Connecting to cluster...", func() error {
+				var connErr error
+				resp, connErr = app.API.ConnectKubernetes(ctx, cluster.ID, namespace, reason)
+				return connErr
+			}); err != nil {
 				return err
 			}
 
@@ -91,7 +181,7 @@ func newConnectKubernetesCommand() *cobra.Command {
 				kubeconfig = strings.Replace(kubeconfig, "token: PLACEHOLDER", "token: "+util.QuoteYAMLString(token), 1)
 			}
 			if strings.Contains(kubeconfig, "token: PLACEHOLDER") {
-				return fmt.Errorf("kubeconfig has no auth token; run `prysm login` then retry `connect k8s`")
+				return fmt.Errorf("kubeconfig has no auth token; run `prysm login` then retry `connect kube`")
 			}
 
 			if execCredential {
@@ -111,7 +201,7 @@ func newConnectKubernetesCommand() *cobra.Command {
 				if err := os.WriteFile(dest, []byte(kubeconfig), 0o600); err != nil {
 					return fmt.Errorf("write kubeconfig: %w", err)
 				}
-				color.New(color.FgGreen).Printf("📁 Kubeconfig written to %s\n", dest)
+				fmt.Println(style.Success.Render(fmt.Sprintf("📁 Kubeconfig written to %s", dest)))
 			} else {
 				fmt.Println("----- kubeconfig (apply with kubectl) -----")
 				fmt.Print(kubeconfig)
@@ -119,10 +209,10 @@ func newConnectKubernetesCommand() *cobra.Command {
 					fmt.Println()
 				}
 				fmt.Println("----- end kubeconfig -----")
-				color.New(color.FgHiBlack).Println("Tip: rerun with --output <path> to save this configuration.")
+				fmt.Println(style.MutedStyle.Render("Tip: rerun with --output <path> to save this configuration."))
 			}
 
-			color.New(color.FgGreen).Printf("✅ Kubernetes session established for %s (session: %s)\n", resp.Cluster.Name, resp.Session.SessionID)
+			fmt.Println(style.Success.Render(fmt.Sprintf("✅ Kubernetes session established for %s (session: %s)", resp.Cluster.Name, resp.Session.SessionID)))
 			return nil
 		},
 	}
@@ -150,7 +240,7 @@ func newConnectDevicesCommand() *cobra.Command {
 				return err
 			}
 			if len(nodes) == 0 {
-				color.New(color.FgYellow).Println("No mesh peers registered for your organization.")
+				fmt.Println(style.Warning.Render("No mesh peers registered for your organization."))
 				return nil
 			}
 
@@ -158,6 +248,154 @@ func newConnectDevicesCommand() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func newConnectSSHCommand() *cobra.Command {
+	var (
+		reason    string
+		requestID string
+		port      int
+		dryRun    bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "ssh <target> [-- <remote command>]",
+		Short: "Open policy-checked SSH access to a host or registered target",
+		Long:  "Request SSH access through Prysm policy checks and open an interactive SSH session. The --reason value is required for audit trails.",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			app := MustApp()
+			target := strings.TrimSpace(args[0])
+			remoteCommand := []string{}
+			if len(args) > 1 {
+				remoteCommand = args[1:]
+			}
+
+			ctx, cancel := context.WithTimeout(cmd.Context(), 45*time.Second)
+			defer cancel()
+
+			resp, err := app.API.ConnectSSH(ctx, api.SSHConnectRequest{
+				Target:    target,
+				Reason:    strings.TrimSpace(reason),
+				RequestID: strings.TrimSpace(requestID),
+				Port:      port,
+				Command:   remoteCommand,
+				DryRun:    dryRun,
+			})
+			if err != nil {
+				return err
+			}
+
+			sshArgs, resolvedTarget, err := buildSSHArgs(target, port, resp, remoteCommand)
+			if err != nil {
+				return err
+			}
+
+			if sid := strings.TrimSpace(resp.Session.SessionID); sid != "" {
+				fmt.Println(style.MutedStyle.Render(fmt.Sprintf("SSH session: %s", sid)))
+			}
+
+			if dryRun {
+				fmt.Println(style.Success.Render("Policy checks passed (dry-run)."))
+				fmt.Printf("ssh %s\n", shellJoin(sshArgs))
+				fmt.Println(style.MutedStyle.Render("Use --dry-run=false (default) to execute the SSH command."))
+				return nil
+			}
+
+			if _, err := exec.LookPath("ssh"); err != nil {
+				return fmt.Errorf("ssh client not found in PATH")
+			}
+
+			fmt.Println(style.Success.Render(fmt.Sprintf("Connecting to %s...", resolvedTarget)))
+			sshCmd := exec.Command("ssh", sshArgs...)
+			sshCmd.Stdin = os.Stdin
+			sshCmd.Stdout = os.Stdout
+			sshCmd.Stderr = os.Stderr
+			return sshCmd.Run()
+		},
+	}
+
+	cmd.Flags().StringVar(&reason, "reason", "", "required justification for audit and policy evaluation")
+	cmd.Flags().StringVar(&requestID, "request-id", "", "link this SSH session to an approved access request ID")
+	cmd.Flags().IntVar(&port, "port", 0, "override SSH port")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "evaluate policy and print the ssh command without executing it")
+	_ = cmd.MarkFlagRequired("reason")
+
+	return cmd
+}
+
+func buildSSHArgs(target string, requestedPort int, resp *api.SSHConnectResponse, remoteCommand []string) ([]string, string, error) {
+	if resp == nil {
+		return nil, "", fmt.Errorf("missing ssh response")
+	}
+
+	resolvedTarget := strings.TrimSpace(resp.Connection.Target)
+	host := strings.TrimSpace(resp.Connection.Host)
+	user := strings.TrimSpace(resp.Connection.User)
+
+	if resolvedTarget == "" && host != "" {
+		if user != "" {
+			resolvedTarget = user + "@" + host
+		} else {
+			resolvedTarget = host
+		}
+	}
+	if resolvedTarget == "" {
+		resolvedTarget = strings.TrimSpace(target)
+	}
+	if resolvedTarget == "" {
+		return nil, "", fmt.Errorf("unable to resolve SSH target")
+	}
+
+	finalPort := resp.Connection.Port
+	if finalPort == 0 {
+		finalPort = requestedPort
+	}
+
+	args := make([]string, 0, 16+len(remoteCommand))
+	if finalPort > 0 {
+		args = append(args, "-p", strconv.Itoa(finalPort))
+	}
+	if idFile := strings.TrimSpace(resp.Connection.IdentityFile); idFile != "" {
+		args = append(args, "-i", idFile)
+	}
+	if pc := strings.TrimSpace(resp.Connection.ProxyCommand); pc != "" {
+		args = append(args, "-o", "ProxyCommand="+pc)
+	}
+	for _, opt := range resp.Connection.Options {
+		opt = strings.TrimSpace(opt)
+		if opt == "" {
+			continue
+		}
+		args = append(args, "-o", opt)
+	}
+	if len(resp.Connection.SSHArgs) > 0 {
+		args = append(args, resp.Connection.SSHArgs...)
+	}
+
+	args = append(args, resolvedTarget)
+	args = append(args, remoteCommand...)
+	return args, resolvedTarget, nil
+}
+
+func shellJoin(args []string) string {
+	if len(args) == 0 {
+		return ""
+	}
+
+	quoted := make([]string, 0, len(args))
+	for _, a := range args {
+		if a == "" {
+			quoted = append(quoted, "''")
+			continue
+		}
+		if strings.ContainsAny(a, " \t\n'\"\\") {
+			quoted = append(quoted, strconv.Quote(a))
+			continue
+		}
+		quoted = append(quoted, a)
+	}
+	return strings.Join(quoted, " ")
 }
 
 func findCluster(clusters []api.Cluster, ref string) (*api.Cluster, error) {

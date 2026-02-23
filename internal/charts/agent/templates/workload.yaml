@@ -1,0 +1,286 @@
+{{- $fullname := include "agent.fullname" . -}}
+{{- $labels := include "agent.labels" . -}}
+{{- $secretName := .Values.configSecret.existingSecret | default (default (printf "%s-config" (include "agent.fullname" .)) .Values.configSecret.name) -}}
+{{- $extraEnvFrom := default (list) .Values.extraEnvFrom -}}
+{{- $extraEnv := default (list) .Values.extraEnv -}}
+{{- $extraVolumes := default (list) .Values.extraVolumes -}}
+{{- $extraVolumeMounts := default (list) .Values.extraVolumeMounts -}}
+{{- $controllerKindValue := default "DaemonSet" .Values.controller.kind -}}
+{{- $controllerKindLower := lower $controllerKindValue -}}
+{{- if and (ne $controllerKindLower "daemonset") (ne $controllerKindLower "deployment") }}
+{{- fail (printf "unsupported controller.kind %q (expected DaemonSet or Deployment)" .Values.controller.kind) -}}
+{{- end }}
+{{- $isDeployment := eq $controllerKindLower "deployment" -}}
+{{- $strategy := .Values.controller.strategy | default dict -}}
+apiVersion: apps/v1
+kind: {{ if $isDeployment }}Deployment{{ else }}DaemonSet{{ end }}
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- $labels | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "agent.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  {{- if $isDeployment }}
+  {{- if .Values.controller.replicas }}
+  replicas: {{ .Values.controller.replicas }}
+  {{- end }}
+  {{- if gt (len $strategy) 0 }}
+  strategy:
+    {{- toYaml $strategy | nindent 4 }}
+  {{- else if .Values.hostNetwork }}
+  strategy:
+    type: Recreate
+  {{- end }}
+  {{- else }}
+  {{- with .Values.updateStrategy }}
+  updateStrategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- end }}
+  template:
+    metadata:
+      labels:
+        {{- $labels | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "agent.serviceAccountName" . }}
+      {{- if .Values.hostNetwork }}
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      {{- end }}
+      {{- if .Values.hostPID }}
+      hostPID: true
+      {{- end }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.runAsRoot }}
+      securityContext:
+        fsGroup: 1001
+        runAsNonRoot: false
+        runAsUser: 0
+        runAsGroup: 0
+      {{- else }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- end }}
+      {{- if .Values.terminationGracePeriodSeconds }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- end }}
+      containers:
+        - name: agent
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- $useSecret := or .Values.configSecret.existingSecret .Values.configSecret.create }}
+          {{- if or $useSecret (gt (len $extraEnvFrom) 0) }}
+          envFrom:
+            {{- if $useSecret }}
+            - secretRef:
+                name: {{ $secretName }}
+            {{- end }}
+            {{- with $extraEnvFrom }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_SERVICE_ACCOUNT
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.serviceAccountName
+            - name: TMPDIR
+              value: /tmp
+            - name: EBPF_IMAGE_REPOSITORY
+              value: {{ .Values.ebpfCollector.image.repository | quote }}
+            - name: EBPF_IMAGE_TAG
+              value: {{ .Values.ebpfCollector.image.tag | default "latest" | quote }}
+            {{- if .Values.ebpfCollector.imagePullSecret }}
+            - name: EBPF_IMAGE_PULL_SECRET
+              value: {{ .Values.ebpfCollector.imagePullSecret | quote }}
+            {{- end }}
+            {{- with $extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: wireguard
+              containerPort: 51820
+              protocol: UDP
+            - name: http
+              containerPort: {{ .Values.httpPort | default 8080 }}
+              protocol: TCP
+          {{- if .Values.runAsRoot }}
+          securityContext:
+            privileged: true
+            capabilities:
+              add:
+                - NET_ADMIN
+                - SYS_MODULE
+                - SYS_ADMIN
+            runAsUser: 0
+            runAsGroup: 0
+            allowPrivilegeEscalation: true
+          {{- else }}
+          {{- with .Values.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- end }}
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- $wireguardMount := and .Values.volumes.wireguardConfig.enabled .Values.volumes.wireguardConfig.mountPath }}
+          {{- $modulesMount := and .Values.volumes.modules.enabled .Values.volumes.modules.mountPath }}
+          {{- $kubeconfigMount := and .Values.volumes.kubeconfig.enabled .Values.volumes.kubeconfig.mountPath }}
+          {{- $tmpMount := and .Values.volumes.tmp.enabled .Values.volumes.tmp.mountPath }}
+          {{- $tunnelPodsMount := and .Values.tunnelDaemon.enabled (index .Values.volumes "tunnelPods") (index .Values.volumes.tunnelPods "enabled") (index .Values.volumes.tunnelPods "mountPath") }}
+          {{- $netnsMount := and .Values.tunnelDaemon.enabled (index .Values.volumes "netns") (index .Values.volumes.netns "enabled") (index .Values.volumes.netns "mountPath") }}
+          {{- if or $wireguardMount $modulesMount $kubeconfigMount $tmpMount $tunnelPodsMount $netnsMount (gt (len $extraVolumeMounts) 0) }}
+          volumeMounts:
+            {{- if $wireguardMount }}
+            - name: wireguard-config
+              mountPath: {{ .Values.volumes.wireguardConfig.mountPath }}
+              readOnly: {{ .Values.volumes.wireguardConfig.readOnly | default false }}
+            {{- end }}
+            {{- if $modulesMount }}
+            - name: kernel-modules
+              mountPath: {{ .Values.volumes.modules.mountPath }}
+              readOnly: {{ .Values.volumes.modules.readOnly | default false }}
+            {{- end }}
+            {{- if $kubeconfigMount }}
+            - name: kubeconfig
+              mountPath: {{ .Values.volumes.kubeconfig.mountPath }}
+              readOnly: {{ .Values.volumes.kubeconfig.readOnly | default false }}
+            {{- end }}
+            {{- if and .Values.volumes.stateDir.enabled .Values.volumes.stateDir.mountPath }}
+            - name: state-dir
+              mountPath: {{ .Values.volumes.stateDir.mountPath }}
+              readOnly: {{ .Values.volumes.stateDir.readOnly | default false }}
+            {{- end }}
+            {{- if $tmpMount }}
+            - name: tmp
+              mountPath: {{ .Values.volumes.tmp.mountPath }}
+              readOnly: {{ .Values.volumes.tmp.readOnly | default false }}
+            - name: tmp
+              mountPath: /app/tmp
+              readOnly: {{ .Values.volumes.tmp.readOnly | default false }}
+            {{- end }}
+            {{- if $tunnelPodsMount }}
+            - name: tunnel-pods
+              mountPath: {{ index .Values.volumes.tunnelPods "mountPath" }}
+              readOnly: {{ index .Values.volumes.tunnelPods "readOnly" | default false }}
+            {{- end }}
+            {{- if $netnsMount }}
+            - name: netns
+              mountPath: {{ index .Values.volumes.netns "mountPath" }}
+              readOnly: {{ index .Values.volumes.netns "readOnly" | default false }}
+              {{- if index .Values.volumes.netns "mountPropagation" }}
+              mountPropagation: {{ index .Values.volumes.netns "mountPropagation" }}
+              {{- end }}
+            {{- end }}
+            {{- with $extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- $wireguardVolume := and .Values.volumes.wireguardConfig.enabled .Values.volumes.wireguardConfig.hostPath }}
+      {{- $modulesVolume := and .Values.volumes.modules.enabled .Values.volumes.modules.hostPath }}
+      {{- $kubeconfigVolume := and .Values.volumes.kubeconfig.enabled .Values.volumes.kubeconfig.hostPath }}
+      {{- $stateDirVolume := and .Values.volumes.stateDir.enabled (or (eq (lower (default "" .Values.volumes.stateDir.type)) "emptydir") .Values.volumes.stateDir.hostPath) }}
+      {{- $tmpVolume := and .Values.volumes.tmp.enabled (eq (lower (default "" .Values.volumes.tmp.type)) "emptydir") }}
+      {{- $tunnelPodsVolume := and .Values.tunnelDaemon.enabled (index .Values.volumes "tunnelPods") (index .Values.volumes.tunnelPods "enabled") (index .Values.volumes.tunnelPods "hostPath") }}
+      {{- $netnsVolume := and .Values.tunnelDaemon.enabled (index .Values.volumes "netns") (index .Values.volumes.netns "enabled") (index .Values.volumes.netns "hostPath") }}
+      {{- if or $wireguardVolume $modulesVolume $kubeconfigVolume $stateDirVolume $tmpVolume $tunnelPodsVolume $netnsVolume (gt (len $extraVolumes) 0) }}
+      volumes:
+        {{- if $wireguardVolume }}
+        - name: wireguard-config
+          hostPath:
+            path: {{ .Values.volumes.wireguardConfig.hostPath }}
+            type: {{ .Values.volumes.wireguardConfig.type | default "DirectoryOrCreate" }}
+        {{- end }}
+        {{- if $modulesVolume }}
+        - name: kernel-modules
+          hostPath:
+            path: {{ .Values.volumes.modules.hostPath }}
+            type: {{ .Values.volumes.modules.type | default "Directory" }}
+        {{- end }}
+        {{- if $kubeconfigVolume }}
+        - name: kubeconfig
+          hostPath:
+            path: {{ .Values.volumes.kubeconfig.hostPath }}
+            type: {{ .Values.volumes.kubeconfig.type | default "File" }}
+        {{- end }}
+        {{- if .Values.volumes.stateDir.enabled }}
+        - name: state-dir
+          {{- if eq (lower (default "" .Values.volumes.stateDir.type)) "emptydir" }}
+          emptyDir:
+            {{- if .Values.volumes.stateDir.emptyDir }}
+            {{- toYaml .Values.volumes.stateDir.emptyDir | nindent 12 }}
+            {{- else }}
+            {}
+            {{- end }}
+          {{- else }}
+          hostPath:
+            path: {{ .Values.volumes.stateDir.hostPath }}
+            type: {{ .Values.volumes.stateDir.type | default "DirectoryOrCreate" }}
+          {{- end }}
+        {{- end }}
+        {{- if $tmpVolume }}
+        - name: tmp
+          emptyDir:
+            {{- if .Values.volumes.tmp.emptyDir }}
+            {{- toYaml .Values.volumes.tmp.emptyDir | nindent 12 }}
+            {{- else }}
+            {}
+            {{- end }}
+        {{- end }}
+        {{- if $tunnelPodsVolume }}
+        - name: tunnel-pods
+          hostPath:
+            path: {{ index .Values.volumes.tunnelPods "hostPath" }}
+            type: {{ index .Values.volumes.tunnelPods "type" | default "DirectoryOrCreate" }}
+        {{- end }}
+        {{- if $netnsVolume }}
+        - name: netns
+          hostPath:
+            path: {{ index .Values.volumes.netns "hostPath" }}
+            type: {{ index .Values.volumes.netns "type" | default "DirectoryOrCreate" }}
+        {{- end }}
+        {{- with $extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}

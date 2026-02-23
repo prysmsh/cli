@@ -2,6 +2,7 @@ package derp
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -114,6 +115,48 @@ func TestSendRouteRequestWithoutConnection(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "connection not established") {
 		t.Errorf("expected connection error, got: %v", err)
+	}
+}
+
+func TestSendRouteRequest_EmptyProtocol(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	dataCh := make(chan map[string]interface{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, _ := upgrader.Upgrade(w, r, nil)
+		defer conn.Close()
+		conn.ReadJSON(&map[string]interface{}{})
+		var msg map[string]interface{}
+		if err := conn.ReadJSON(&msg); err == nil {
+			if d, ok := msg["data"].(map[string]interface{}); ok {
+				dataCh <- d
+			}
+		}
+	}))
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	client := NewClient(wsURL, "dev-1", WithSessionToken("tok"))
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	go func() { _ = client.Run(ctx) }()
+	time.Sleep(150 * time.Millisecond)
+
+	_, err := client.SendRouteRequest("org1", "target", 30000, 5432, "")
+	if err != nil {
+		t.Fatalf("SendRouteRequest: %v", err)
+	}
+
+	var capturedData map[string]interface{}
+	select {
+	case capturedData = <-dataCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for route_request")
+	}
+	client.Close()
+
+	if capturedData["protocol"] != "TCP" {
+		t.Errorf("protocol = %v, want TCP (default)", capturedData["protocol"])
 	}
 }
 
@@ -271,6 +314,34 @@ func TestGetString(t *testing.T) {
 	}
 }
 
+type stringerVal string
+
+func (s stringerVal) String() string { return string(s) }
+
+func TestGetString_Stringer(t *testing.T) {
+	got := getString(stringerVal("via_stringer"))
+	if got != "via_stringer" {
+		t.Errorf("getString(stringer) = %q, want via_stringer", got)
+	}
+}
+
+func TestSummarizePeer_MarshalFails(t *testing.T) {
+	// json.Marshal fails for channels; summarizePeer falls back to fmt.Sprintf("%v", peer)
+	ch := make(chan int)
+	got := summarizePeer(ch)
+	if got == "" {
+		t.Error("summarizePeer should return fallback when Marshal fails")
+	}
+}
+
+func TestSummarizeMessage_MarshalFails(t *testing.T) {
+	ch := make(chan int)
+	got := summarizeMessage(ch)
+	if got == "" {
+		t.Error("summarizeMessage should return fallback when Marshal fails")
+	}
+}
+
 func TestGetSlice(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -334,6 +405,24 @@ func TestParseErrorPayload(t *testing.T) {
 			wantCode:   "byte_error",
 			wantDetail: "byte detail",
 		},
+		{
+			name:       "base64 string json",
+			data:       base64.StdEncoding.EncodeToString([]byte(`{"error": "b64_err", "detail": "b64 detail"}`)),
+			wantCode:   "b64_err",
+			wantDetail: "b64 detail",
+		},
+		{
+			name:       "base64 string invalid json",
+			data:       base64.StdEncoding.EncodeToString([]byte("not json")),
+			wantCode:   "unknown",
+			wantDetail: "not json",
+		},
+		{
+			name:       "default type",
+			data:       123,
+			wantCode:   "unknown",
+			wantDetail: "",
+		},
 	}
 
 	for _, tt := range tests {
@@ -374,6 +463,181 @@ func TestSummarizeMessage(t *testing.T) {
 	if result == "" {
 		t.Error("summarizeMessage returned empty string")
 	}
+}
+
+// TestClientReceivesRouteSetup_WithHandler ensures handleRouteSetup invokes TunnelTrafficHandler.
+func TestClientReceivesRouteSetup_WithHandler(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+
+	var gotRouteID string
+	var gotTargetPort, gotExtPort int
+	handler := func(routeID string, targetPort, externalPort int, _ []byte) {
+		gotRouteID = routeID
+		gotTargetPort = targetPort
+		gotExtPort = externalPort
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, _ := upgrader.Upgrade(w, r, nil)
+		defer conn.Close()
+		conn.ReadJSON(&map[string]interface{}{})
+		conn.WriteJSON(map[string]interface{}{
+			"type": "route_setup",
+			"from": "server",
+			"data": map[string]interface{}{
+				"route_id":         "route-123",
+				"external_port":    30000,
+				"target_port":     5432,
+				"protocol":        "TCP",
+				"organization_id": "org1",
+			},
+		})
+		conn.ReadMessage() // wait for route_response
+	}))
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	client := NewClient(wsURL, "dev-1", WithSessionToken("tok"), WithTunnelTrafficHandler(handler))
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	go func() { _ = client.Run(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+	client.Close()
+	time.Sleep(50 * time.Millisecond)
+
+	if gotRouteID != "route-123" || gotTargetPort != 5432 || gotExtPort != 30000 {
+		t.Errorf("handler got route_id=%q target_port=%d external_port=%d", gotRouteID, gotTargetPort, gotExtPort)
+	}
+}
+
+// TestClientReceivesTrafficData_WithHandler ensures handleTrafficData invokes TunnelTrafficHandler.
+func TestClientReceivesTrafficData_WithHandler(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+
+	var gotRouteID string
+	var gotData []byte
+	handler := func(routeID string, _, _ int, data []byte) {
+		gotRouteID = routeID
+		gotData = data
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, _ := upgrader.Upgrade(w, r, nil)
+		defer conn.Close()
+		conn.ReadJSON(&map[string]interface{}{})
+		conn.WriteJSON(map[string]interface{}{
+			"type": "traffic_data",
+			"data": map[string]interface{}{
+				"route_id": "r1",
+				"data":     []byte("payload"),
+			},
+		})
+		conn.ReadMessage()
+	}))
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	client := NewClient(wsURL, "dev-1", WithSessionToken("tok"), WithTunnelTrafficHandler(handler))
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	go func() { _ = client.Run(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+	client.Close()
+	time.Sleep(50 * time.Millisecond)
+
+	if gotRouteID != "r1" {
+		t.Errorf("handler got route_id=%q", gotRouteID)
+	}
+	if string(gotData) != "payload" {
+		t.Errorf("handler got data=%q", gotData)
+	}
+}
+
+// TestClientReceivesRouteSetupParseError ensures handleRouteSetup handles invalid JSON without panic.
+func TestClientReceivesRouteSetupParseError(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, _ := upgrader.Upgrade(w, r, nil)
+		defer conn.Close()
+		conn.ReadJSON(&map[string]interface{}{})
+		conn.WriteJSON(map[string]interface{}{
+			"type": "route_setup",
+			"from": "server",
+			"data": "not valid json",
+		})
+		conn.ReadMessage()
+	}))
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	client := NewClient(wsURL, "dev-1", WithSessionToken("tok"), WithLogLevel(LogDebug))
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	go func() { _ = client.Run(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+	client.Close()
+	time.Sleep(50 * time.Millisecond)
+}
+
+// TestClientReceivesTrafficDataParseError ensures handleTrafficData handles invalid JSON without panic.
+func TestClientReceivesTrafficDataParseError(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, _ := upgrader.Upgrade(w, r, nil)
+		defer conn.Close()
+		conn.ReadJSON(&map[string]interface{}{})
+		conn.WriteJSON(map[string]interface{}{
+			"type": "traffic_data",
+			"data": "not valid json",
+		})
+		conn.ReadMessage()
+	}))
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	client := NewClient(wsURL, "dev-1", WithSessionToken("tok"), WithLogLevel(LogDebug))
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	go func() { _ = client.Run(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+	client.Close()
+	time.Sleep(50 * time.Millisecond)
+}
+
+// TestClientReceivesErrorMessage ensures the client handles server error messages (EventError).
+func TestClientReceivesErrorMessage(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		conn.ReadJSON(&map[string]interface{}{}) // registration
+		conn.WriteJSON(map[string]interface{}{
+			"type": "error",
+			"data": map[string]interface{}{"error": "auth_failed", "detail": "invalid token"},
+		})
+		conn.ReadMessage() // block until client closes
+	}))
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	client := NewClient(wsURL, "dev-1", WithSessionToken("tok"))
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	go func() { _ = client.Run(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+	client.Close()
+	time.Sleep(50 * time.Millisecond)
 }
 
 // Integration test with a mock WebSocket server
@@ -461,5 +725,123 @@ func TestEventTypes(t *testing.T) {
 		if string(e) == "" {
 			t.Errorf("EventType %v has empty string value", e)
 		}
+	}
+}
+
+func TestWithRouteResponseHandler(t *testing.T) {
+	var gotRouteID, gotStatus string
+	handler := func(routeID, status string) {
+		gotRouteID = routeID
+		gotStatus = status
+	}
+	client := NewClient("wss://derp.example.com", "dev-1", WithRouteResponseHandler(handler))
+	if client.RouteResponseHandler == nil {
+		t.Fatal("RouteResponseHandler should be set")
+	}
+	client.RouteResponseHandler("r-1", "ok")
+	if gotRouteID != "r-1" || gotStatus != "ok" {
+		t.Errorf("handler got routeID=%q status=%q", gotRouteID, gotStatus)
+	}
+}
+
+func TestClientReceivesRouteResponse_WithHandler(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+
+	var gotRouteID, gotStatus string
+	handler := func(routeID, status string) {
+		gotRouteID = routeID
+		gotStatus = status
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, _ := upgrader.Upgrade(w, r, nil)
+		defer conn.Close()
+		conn.ReadJSON(&map[string]interface{}{}) // registration
+		conn.WriteJSON(map[string]interface{}{
+			"type": "route_response",
+			"data": map[string]interface{}{
+				"route_id": "exit_123",
+				"status":   "ok",
+			},
+		})
+		conn.ReadMessage() // wait
+	}))
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	client := NewClient(wsURL, "dev-1", WithSessionToken("tok"), WithRouteResponseHandler(handler))
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	go func() { _ = client.Run(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+	client.Close()
+	time.Sleep(50 * time.Millisecond)
+
+	if gotRouteID != "exit_123" || gotStatus != "ok" {
+		t.Errorf("handler got routeID=%q status=%q, want exit_123/ok", gotRouteID, gotStatus)
+	}
+}
+
+func TestSendExitRouteRequest_WithConnection(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	dataCh := make(chan map[string]interface{}, 1)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, _ := upgrader.Upgrade(w, r, nil)
+		defer conn.Close()
+		conn.ReadJSON(&map[string]interface{}{}) // registration
+		var msg map[string]interface{}
+		if err := conn.ReadJSON(&msg); err == nil {
+			if d, ok := msg["data"].(map[string]interface{}); ok {
+				dataCh <- d
+			}
+		}
+	}))
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	client := NewClient(wsURL, "dev-1", WithSessionToken("tok"))
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	go func() { _ = client.Run(ctx) }()
+	time.Sleep(150 * time.Millisecond)
+
+	routeID, err := client.SendExitRouteRequest("org-1", "exit-peer-1", "example.com:443")
+	if err != nil {
+		t.Fatalf("SendExitRouteRequest: %v", err)
+	}
+	if !strings.HasPrefix(routeID, "exit_") {
+		t.Errorf("routeID = %q, want exit_ prefix", routeID)
+	}
+
+	var capturedData map[string]interface{}
+	select {
+	case capturedData = <-dataCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for route_request")
+	}
+	client.Close()
+
+	if capturedData["route_type"] != "exit" {
+		t.Errorf("route_type = %v, want exit", capturedData["route_type"])
+	}
+	if capturedData["target_address"] != "example.com:443" {
+		t.Errorf("target_address = %v, want example.com:443", capturedData["target_address"])
+	}
+	if capturedData["target_client"] != "exit-peer-1" {
+		t.Errorf("target_client = %v, want exit-peer-1", capturedData["target_client"])
+	}
+}
+
+func TestSendExitRouteRequest_WithoutConnection(t *testing.T) {
+	client := NewClient("wss://derp.example.com", "dev-1")
+	_, err := client.SendExitRouteRequest("org-1", "exit-peer-1", "example.com:443")
+	if err == nil {
+		t.Fatal("expected error when sending without connection")
+	}
+	if !strings.Contains(err.Error(), "connection not established") {
+		t.Errorf("expected connection error, got: %v", err)
 	}
 }

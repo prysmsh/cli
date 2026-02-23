@@ -7,11 +7,11 @@ import (
 	"os"
 	"testing"
 
-	pluginv1 "github.com/warp-run/prysm-cli/proto/plugin/v1"
+	pluginv1 "github.com/prysmsh/cli/proto/plugin/v1"
 
-	"github.com/warp-run/prysm-cli/internal/api"
-	"github.com/warp-run/prysm-cli/internal/config"
-	"github.com/warp-run/prysm-cli/internal/session"
+	"github.com/prysmsh/cli/internal/api"
+	"github.com/prysmsh/cli/internal/config"
+	"github.com/prysmsh/cli/internal/session"
 )
 
 func TestGRPCHostServer_GetAuthContext(t *testing.T) {

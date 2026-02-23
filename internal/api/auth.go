@@ -63,6 +63,30 @@ func (c *Client) Logout(ctx context.Context) error {
 	return err
 }
 
+// RefreshTokenResponse is the response from POST /auth/refresh.
+type RefreshTokenResponse struct {
+	Token         string `json:"token"`
+	ExpiresAtUnix int64  `json:"expires_at"`
+	RefreshToken  string `json:"refresh_token,omitempty"`
+}
+
+// RefreshSession exchanges a refresh token for a new access token.
+// Returns the new token and expiry, or an error if the backend does not support refresh or the token is invalid.
+func (c *Client) RefreshSession(ctx context.Context, refreshToken string) (*RefreshTokenResponse, error) {
+	if refreshToken == "" {
+		return nil, fmt.Errorf("refresh token required")
+	}
+	body := map[string]string{"refresh_token": refreshToken}
+	var resp RefreshTokenResponse
+	if _, err := c.Do(ctx, "POST", "/auth/refresh", body, &resp); err != nil {
+		return nil, err
+	}
+	if resp.Token == "" {
+		return nil, fmt.Errorf("refresh response missing token")
+	}
+	return &resp, nil
+}
+
 // ProfileResponse is the response from GET /profile.
 type ProfileResponse struct {
 	User           ProfileUser   `json:"user"`
@@ -144,9 +168,10 @@ type DeviceTokenRequest struct {
 
 // DeviceTokenResponse is the response from POST /auth/device/token.
 type DeviceTokenResponse struct {
-	Token     string `json:"token"`
-	ExpiresAt int64  `json:"expires_at"`
-	Error     string `json:"error"`
+	Token        string `json:"token"`
+	ExpiresAt    int64  `json:"expires_at"`
+	RefreshToken string `json:"refresh_token,omitempty"`
+	Error        string `json:"error"`
 }
 
 // RequestDeviceCode initiates the device authorization flow.

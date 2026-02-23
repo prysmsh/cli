@@ -75,7 +75,7 @@ func (m *Manager) RegisterCommands(rootCmd *cobra.Command) {
 				}
 				continue
 			}
-			cmd := BuildCobraCommand(spec, p)
+			cmd := BuildCobraCommand(spec, p, nil)
 			rootCmd.AddCommand(cmd)
 			existing[spec.Name] = true
 		}
@@ -151,8 +151,13 @@ type PluginInfo struct {
 	Path        string // only for external
 }
 
+// RequestOptions returns host-provided fields for ExecuteRequest (format, env, debug).
+// Pass nil to use only args and working dir. Used by the host to inject OutputFormat etc.
+type RequestOptions func() ExecuteRequest
+
 // BuildCobraCommand creates a full Cobra command tree from a builtin plugin's CommandSpec.
-func BuildCobraCommand(spec CommandSpec, p Plugin) *cobra.Command {
+// If opts is non-nil, it is called at run time and merged into the ExecuteRequest (OutputFormat, Env, Debug).
+func BuildCobraCommand(spec CommandSpec, p Plugin, opts RequestOptions) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   spec.Name,
 		Short: spec.Short,
@@ -162,25 +167,32 @@ func BuildCobraCommand(spec CommandSpec, p Plugin) *cobra.Command {
 	if spec.DisableFlagParsing {
 		cmd.DisableFlagParsing = true
 	}
+	if spec.Hidden {
+		cmd.Hidden = true
+	}
 
 	if len(spec.Subcommands) > 0 {
 		for _, sub := range spec.Subcommands {
-			cmd.AddCommand(BuildCobraCommand(sub, p))
+			cmd.AddCommand(BuildCobraCommand(sub, p, opts))
 		}
 	} else {
 		// Leaf command — execute the plugin
 		pluginRef := p
 		cmdName := spec.Name
 		cmd.RunE = func(c *cobra.Command, args []string) error {
-			// Reconstruct the full argument list including the subcommand path
 			fullArgs := []string{cmdName}
 			fullArgs = append(fullArgs, args...)
-
 			wd, _ := os.Getwd()
-			resp := pluginRef.Execute(c.Context(), ExecuteRequest{
-				Args:       fullArgs,
-				WorkingDir: wd,
-			})
+			req := ExecuteRequest{Args: fullArgs, WorkingDir: wd}
+			if opts != nil {
+				ext := opts()
+				req.OutputFormat = ext.OutputFormat
+				req.Debug = ext.Debug
+				if len(ext.Env) > 0 {
+					req.Env = ext.Env
+				}
+			}
+			resp := pluginRef.Execute(c.Context(), req)
 
 			if resp.Stdout != "" {
 				fmt.Print(resp.Stdout)

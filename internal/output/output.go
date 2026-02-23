@@ -9,7 +9,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/warp-run/prysm-cli/internal/style"
+	"github.com/prysmsh/cli/internal/style"
 )
 
 // Format represents the output format.

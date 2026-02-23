@@ -9,8 +9,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/warp-run/prysm-cli/internal/config"
-	"github.com/warp-run/prysm-cli/internal/session"
+	"github.com/prysmsh/cli/internal/config"
+	"github.com/prysmsh/cli/internal/session"
 )
 
 // execCredentialResponse mirrors the Kubernetes ExecCredential type

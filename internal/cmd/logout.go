@@ -3,13 +3,14 @@ package cmd
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
-	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
-	"github.com/warp-run/prysm-cli/internal/api"
+	"github.com/prysmsh/cli/internal/api"
+	"github.com/prysmsh/cli/internal/style"
 )
 
 func newLogoutCommand() *cobra.Command {
@@ -24,7 +25,7 @@ func newLogoutCommand() *cobra.Command {
 				return err
 			}
 			if sess == nil {
-				color.New(color.FgYellow).Println("No active session. Run `prysm login` to authenticate.")
+				fmt.Println(style.Warning.Render("No active session. Run `prysm login` to authenticate."))
 				return nil
 			}
 
@@ -34,7 +35,7 @@ func newLogoutCommand() *cobra.Command {
 			if err := app.API.Logout(ctx); err != nil {
 				var apiErr *api.APIError
 				if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnauthorized {
-					color.New(color.FgYellow).Printf("Logout warning: %s\n", apiErr.Error())
+					fmt.Println(style.Warning.Render(fmt.Sprintf("Logout warning: %s", apiErr.Error())))
 				} else {
 					return err
 				}
@@ -44,7 +45,7 @@ func newLogoutCommand() *cobra.Command {
 				return err
 			}
 
-			color.New(color.FgGreen).Println("🔒 Session revoked. Access tokens destroyed.")
+			fmt.Println(style.Success.Render("🔒 Session revoked. Access tokens destroyed."))
 			return nil
 		},
 	}

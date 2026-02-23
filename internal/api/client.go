@@ -239,6 +239,86 @@ func (c *Client) Do(ctx context.Context, method, endpoint string, payload interf
 	return resp, nil
 }
 
+// DoRaw performs an HTTP request with a raw body (e.g. for binary uploads).
+// contentType should be the MIME type (e.g. "application/wasm").
+func (c *Client) DoRaw(ctx context.Context, method, endpoint, contentType string, body io.Reader, v interface{}) (*http.Response, error) {
+	endpoint = strings.TrimSpace(endpoint)
+	joinedPath := path.Join(c.baseURL.Path, strings.TrimLeft(endpoint, "/"))
+	target := *c.baseURL
+	target.Path = joinedPath
+
+	req, err := http.NewRequestWithContext(ctx, strings.ToUpper(method), target.String(), body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", contentType)
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("perform request: %w", err)
+	}
+	defer func() {
+		if resp.Body != nil {
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+		}
+	}()
+
+	if resp.StatusCode >= 400 {
+		return resp, parseAPIError(resp)
+	}
+	if v != nil {
+		if err := json.NewDecoder(resp.Body).Decode(v); err != nil {
+			return resp, fmt.Errorf("decode response: %w", err)
+		}
+	}
+	return resp, nil
+}
+
+// DoStream performs an HTTP request and returns the raw response w/o decoding.
+// It leaves resp.Body open so callers can stream the payload themselves.
+func (c *Client) DoStream(ctx context.Context, method, endpoint string, headers http.Header, body io.Reader) (*http.Response, error) {
+	endpoint = strings.TrimSpace(endpoint)
+	var rawQuery string
+	if idx := strings.Index(endpoint, "?"); idx >= 0 {
+		rawQuery = endpoint[idx+1:]
+		endpoint = endpoint[:idx]
+	}
+
+	joinedPath := path.Join(c.baseURL.Path, strings.TrimLeft(endpoint, "/"))
+	target := *c.baseURL
+	target.Path = joinedPath
+	if rawQuery != "" {
+		target.RawQuery = rawQuery
+	}
+
+	req, err := http.NewRequestWithContext(ctx, strings.ToUpper(method), target.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	if headers != nil {
+		for key, values := range headers {
+			for _, value := range values {
+				req.Header.Add(key, value)
+			}
+		}
+	}
+
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("perform request: %w", err)
+	}
+	return resp, nil
+}
+
 func (c *Client) newRequest(ctx context.Context, method, endpoint string, payload interface{}) (*http.Request, error) {
 	method = strings.ToUpper(method)
 
@@ -289,8 +369,12 @@ func (c *Client) newRequest(ctx context.Context, method, endpoint string, payloa
 		req.Header.Set("Host", c.hostOverride)
 	}
 
+	// Do not send the access token for refresh; the backend uses the refresh_token in the body.
 	if token := c.getToken(); token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
+		pathPart := strings.TrimLeft(endpoint, "/")
+		if pathPart != "auth/refresh" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
 	}
 
 	return req, nil
@@ -308,4 +392,23 @@ func (c *Client) buildURL(elem ...string) string {
 	copied := *c.baseURL
 	copied.Path = path.Join(segments...)
 	return copied.String()
+}
+
+// GetProxyResponse performs a GET to the cluster proxy (e.g. for discovery) and returns status code and body.
+// Used to surface the backend's error message when kubectl gets a generic 503.
+func (c *Client) GetProxyResponse(ctx context.Context, clusterID string) (statusCode int, body []byte, err error) {
+	req, err := c.newRequest(ctx, "GET", "clusters/"+clusterID+"/proxy/api", nil)
+	if err != nil {
+		return 0, nil, err
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+	body, err = io.ReadAll(resp.Body)
+	if err != nil {
+		return resp.StatusCode, nil, err
+	}
+	return resp.StatusCode, body, nil
 }

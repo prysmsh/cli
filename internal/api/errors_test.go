@@ -102,6 +102,13 @@ func TestParseAPIError(t *testing.T) {
 			wantMsg:    "Bad Gateway",
 		},
 		{
+			name:       "html error page from proxy",
+			statusCode: 502,
+			body:       `<!DOCTYPE html><html><head><title>502 Bad Gateway</title></head><body>cloudflare</body></html>`,
+			wantCode:   "",
+			wantMsg:    "server returned 502 (Bad Gateway)",
+		},
+		{
 			name:       "json with string details",
 			statusCode: 400,
 			body:       `{"code": "ERROR", "message": "Failed", "details": "extra info"}`,

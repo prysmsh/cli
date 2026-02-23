@@ -8,8 +8,28 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/warp-run/prysm-cli/internal/api"
+	"github.com/prysmsh/cli/internal/api"
 )
+
+func TestListRoutes_NilRoutes(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"routes": nil, "total": 0})
+	}))
+	defer srv.Close()
+
+	client := api.NewClient(srv.URL)
+	routes, err := client.ListRoutes(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("ListRoutes: %v", err)
+	}
+	if routes == nil {
+		t.Fatal("expected non-nil empty slice")
+	}
+	if len(routes) != 0 {
+		t.Errorf("len(routes) = %d, want 0", len(routes))
+	}
+}
 
 func TestListRoutesWithClusterFilter(t *testing.T) {
 	var captured struct {

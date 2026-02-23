@@ -71,6 +71,26 @@ func TestStoreSaveAndLoad(t *testing.T) {
 	if loaded.Organization.Name != sess.Organization.Name {
 		t.Errorf("Organization.Name mismatch: got %q, want %q", loaded.Organization.Name, sess.Organization.Name)
 	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
+	if strings.Contains(string(raw), sess.Token) {
+		t.Errorf("session file should not contain plaintext access token")
+	}
+	if strings.Contains(string(raw), sess.RefreshToken) {
+		t.Errorf("session file should not contain plaintext refresh token")
+	}
+
+	keyPath := path + ".key"
+	keyInfo, err := os.Stat(keyPath)
+	if err != nil {
+		t.Fatalf("Stat key failed: %v", err)
+	}
+	if keyInfo.Mode().Perm() != 0o600 {
+		t.Errorf("Expected key file permission 0600, got %o", keyInfo.Mode().Perm())
+	}
 }
 
 func TestStoreLoadNonExistent(t *testing.T) {
@@ -151,8 +171,8 @@ func TestStorePath(t *testing.T) {
 
 func TestSessionExpiresAt(t *testing.T) {
 	tests := []struct {
-		name    string
-		session *Session
+		name     string
+		session  *Session
 		wantZero bool
 	}{
 		{
@@ -166,8 +186,8 @@ func TestSessionExpiresAt(t *testing.T) {
 			wantZero: true,
 		},
 		{
-			name:    "valid expires_at",
-			session: &Session{ExpiresAtUnix: time.Now().Add(time.Hour).Unix()},
+			name:     "valid expires_at",
+			session:  &Session{ExpiresAtUnix: time.Now().Add(time.Hour).Unix()},
 			wantZero: false,
 		},
 	}
@@ -204,10 +224,10 @@ func TestSessionExpiresAtWithTTLOverride(t *testing.T) {
 
 func TestSessionIsExpired(t *testing.T) {
 	tests := []struct {
-		name     string
-		session  *Session
-		window   time.Duration
-		want     bool
+		name    string
+		session *Session
+		window  time.Duration
+		want    bool
 	}{
 		{
 			name: "not expired",
@@ -380,5 +400,29 @@ func TestStoreLoadWithZeroSavedAt(t *testing.T) {
 	}
 	if sess.SavedAt.IsZero() {
 		t.Error("SavedAt should be backfilled from file ModTime")
+	}
+}
+
+func TestStoreLoadLegacyPlaintextSession(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.json")
+	body := `{"token":"legacy-token","refresh_token":"legacy-refresh","email":"u@e.com","user":{"id":1,"name":"u","email":"u@e.com","role":"user","mfa_enabled":false},"organization":{"id":1,"name":"o"}}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	store := NewStore(path)
+	sess, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if sess == nil {
+		t.Fatal("expected session")
+	}
+	if sess.Token != "legacy-token" {
+		t.Fatalf("token = %q", sess.Token)
+	}
+	if sess.RefreshToken != "legacy-refresh" {
+		t.Fatalf("refresh token = %q", sess.RefreshToken)
 	}
 }

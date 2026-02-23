@@ -1,0 +1,23 @@
+Thank you for installing the Prysm agent chart.
+
+Release name: {{ .Release.Name }}
+Namespace: {{ .Release.Namespace }}
+
+{{- $controllerKind := default "daemonset" (lower .Values.controller.kind) -}}
+{{- if eq $controllerKind "deployment" }}
+To verify the Deployment is running:
+  kubectl get deployment {{ include "agent.fullname" . }} --namespace {{ .Release.Namespace }}
+{{- else }}
+To verify the DaemonSet is running:
+  kubectl get daemonset {{ include "agent.fullname" . }} --namespace {{ .Release.Namespace }}
+{{- end }}
+
+If you manage credentials with Helm, rotate them by upgrading the release:
+  helm upgrade {{ .Release.Name }} prysm/agent \
+    --namespace {{ .Release.Namespace }} \
+    --set configSecret.data.AGENT_TOKEN=<new-token> \
+    --set configSecret.data.CLUSTER_ID=<new-cluster-id> \
+    --set configSecret.data.REGION=<new-region>
+
+Ensure the WireGuard and HTTP services are reachable (if enabled):
+  kubectl get svc {{ include "agent.fullname" . }} --namespace {{ .Release.Namespace }}

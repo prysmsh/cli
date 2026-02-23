@@ -9,23 +9,22 @@ import (
 	"strings"
 	"time"
 
-	"github.com/warp-run/prysm-cli/internal/plugin"
+	"github.com/prysmsh/cli/internal/plugin"
 )
 
 // onboardDocker implements the Docker host onboarding skill.
-// It verifies auth, prompts for host name, creates a token,
-// generates a docker-compose.yml, and optionally runs docker compose up.
+// It verifies auth, prompts for host name, optionally includes the eBPF collector,
+// creates a token, generates a docker-compose.yml, and optionally runs docker compose up.
 func (p *OnboardPlugin) onboardDocker(ctx context.Context, req plugin.ExecuteRequest) plugin.ExecuteResponse {
 	return p.doDockerOnboard(ctx, req, false)
 }
 
-// onboardDockerCompose implements the full-stack Docker onboarding skill.
-// Same as docker but includes an eBPF collector sidecar.
+// onboardDockerCompose is a hidden legacy alias that forces collector=true.
 func (p *OnboardPlugin) onboardDockerCompose(ctx context.Context, req plugin.ExecuteRequest) plugin.ExecuteResponse {
 	return p.doDockerOnboard(ctx, req, true)
 }
 
-func (p *OnboardPlugin) doDockerOnboard(ctx context.Context, req plugin.ExecuteRequest, fullStack bool) plugin.ExecuteResponse {
+func (p *OnboardPlugin) doDockerOnboard(ctx context.Context, req plugin.ExecuteRequest, forceCollector bool) plugin.ExecuteResponse {
 	// 1. Verify auth
 	auth, err := p.host.GetAuthContext(ctx)
 	if err != nil {
@@ -43,38 +42,56 @@ func (p *OnboardPlugin) doDockerOnboard(ctx context.Context, req plugin.ExecuteR
 		hostName = hostname
 	}
 
-	// 3. Create agent token via API
-	_ = p.host.Log(ctx, plugin.LogLevelInfo, "Creating agent token...")
-	tokenBody, _ := json.Marshal(map[string]interface{}{
-		"name":        fmt.Sprintf("docker-agent-%s", hostName),
-		"permissions": []string{"*"},
-	})
-	status, respBody, err := p.host.APIRequest(ctx, "POST", "/tokens", tokenBody)
-	if err != nil {
-		return plugin.ExecuteResponse{ExitCode: 1, Error: fmt.Sprintf("failed to create token: %v", err)}
-	}
-	if status < 200 || status >= 300 {
-		return plugin.ExecuteResponse{ExitCode: 1, Error: fmt.Sprintf("failed to create token (HTTP %d): %s", status, string(respBody))}
+	// 3. Collector prompt (unless forced by legacy docker-compose alias)
+	enableCollector := forceCollector
+	if !forceCollector {
+		enableCollector, err = p.host.PromptConfirm(ctx, "Install eBPF collector?")
+		if err != nil {
+			_ = p.host.Log(ctx, plugin.LogLevelDebug, fmt.Sprintf("collector prompt error: %v", err))
+		}
 	}
 
+	// 4. Create agent token via API
 	var tokenResp struct {
-		Token string `json:"token"`
-		ID    uint   `json:"id"`
+		Token struct {
+			ID    uint   `json:"id"`
+			Token string `json:"token"`
+		} `json:"token"`
 	}
-	if err := json.Unmarshal(respBody, &tokenResp); err != nil {
-		return plugin.ExecuteResponse{ExitCode: 1, Error: "failed to parse token response"}
+	tokenErr := withSpinner("Creating agent token...", func() error {
+		tokenBody, _ := json.Marshal(map[string]interface{}{
+			"name":        fmt.Sprintf("docker-agent-%s", hostName),
+			"permissions": []string{"*"},
+		})
+		status, respBody, err := p.host.APIRequest(ctx, "POST", "/tokens", tokenBody)
+		if err != nil {
+			return fmt.Errorf("failed to create token: %v", err)
+		}
+		if status < 200 || status >= 300 {
+			return fmt.Errorf("failed to create token (HTTP %d): %s", status, string(respBody))
+		}
+		if err := json.Unmarshal(respBody, &tokenResp); err != nil {
+			return fmt.Errorf("failed to parse token response: %v", err)
+		}
+		if tokenResp.Token.Token == "" {
+			return fmt.Errorf("empty token in response: %s", string(respBody))
+		}
+		return nil
+	})
+	if tokenErr != nil {
+		return plugin.ExecuteResponse{ExitCode: 1, Error: tokenErr.Error()}
 	}
 	_ = p.host.Log(ctx, plugin.LogLevelSuccess, "Agent token created")
 
-	// 4. Get config for backend URL and DERP servers
+	// 5. Get config for backend URL and DERP servers
 	cfg, err := p.host.GetConfig(ctx)
 	if err != nil {
 		return plugin.ExecuteResponse{ExitCode: 1, Error: err.Error()}
 	}
 	backendURL := strings.TrimSuffix(cfg.APIBaseURL, "/api/v1")
 
-	// 5. Generate docker-compose.yml
-	compose := generateDockerCompose(hostName, backendURL, tokenResp.Token, auth.OrgID, cfg.DERPURL, fullStack)
+	// 6. Generate docker-compose.yml
+	compose := generateDockerCompose(hostName, backendURL, tokenResp.Token.Token, auth.OrgID, cfg.DERPURL, enableCollector)
 	outputFile := "prysm-agent-compose.yml"
 
 	if err := os.WriteFile(outputFile, []byte(compose), 0o644); err != nil {
@@ -82,50 +99,51 @@ func (p *OnboardPlugin) doDockerOnboard(ctx context.Context, req plugin.ExecuteR
 	}
 	_ = p.host.Log(ctx, plugin.LogLevelSuccess, fmt.Sprintf("Generated %s", outputFile))
 
-	// 6. Prompt to run docker compose
+	// 7. Prompt to run docker compose
 	run, err := p.host.PromptConfirm(ctx, "Run `docker compose up -d` now?")
 	if err != nil {
 		_ = p.host.Log(ctx, plugin.LogLevelWarning, "Could not read confirmation, skipping auto-start")
 	}
 
 	if run {
-		_ = p.host.Log(ctx, plugin.LogLevelInfo, "Starting agent...")
-		cmd := exec.CommandContext(ctx, "docker", "compose", "-f", outputFile, "up", "-d")
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			return plugin.ExecuteResponse{ExitCode: 1, Error: fmt.Sprintf("docker compose up failed: %v", err)}
+		composeErr := withSpinner("Starting agent...", func() error {
+			cmd := exec.CommandContext(ctx, "docker", "compose", "-f", outputFile, "up", "-d")
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			return cmd.Run()
+		})
+		if composeErr != nil {
+			return plugin.ExecuteResponse{ExitCode: 1, Error: fmt.Sprintf("docker compose up failed: %v", composeErr)}
 		}
 		_ = p.host.Log(ctx, plugin.LogLevelSuccess, "Agent started")
 
-		// 7. Poll for agent registration
-		_ = p.host.Log(ctx, plugin.LogLevelInfo, "Waiting for agent to register...")
+		// 8. Poll for agent registration
 		registered := false
-		for i := 0; i < 30; i++ {
-			time.Sleep(2 * time.Second)
-			st, body, err := p.host.APIRequest(ctx, "GET", "/clusters", nil)
-			if err != nil || st != 200 {
-				continue
-			}
-			var resp struct {
-				Clusters []struct {
-					Name   string `json:"name"`
-					Status string `json:"status"`
-				} `json:"clusters"`
-			}
-			if err := json.Unmarshal(body, &resp); err != nil {
-				continue
-			}
-			for _, c := range resp.Clusters {
-				if strings.EqualFold(c.Name, hostName) && c.Status == "connected" {
-					registered = true
-					break
+		_ = withSpinner("Waiting for agent to register...", func() error {
+			for i := 0; i < 30; i++ {
+				time.Sleep(2 * time.Second)
+				st, body, err := p.host.APIRequest(ctx, "GET", "/clusters", nil)
+				if err != nil || st != 200 {
+					continue
+				}
+				var resp struct {
+					Clusters []struct {
+						Name   string `json:"name"`
+						Status string `json:"status"`
+					} `json:"clusters"`
+				}
+				if err := json.Unmarshal(body, &resp); err != nil {
+					continue
+				}
+				for _, c := range resp.Clusters {
+					if strings.EqualFold(c.Name, hostName) && c.Status == "connected" {
+						registered = true
+						return nil
+					}
 				}
 			}
-			if registered {
-				break
-			}
-		}
+			return nil
+		})
 
 		if registered {
 			_ = p.host.Log(ctx, plugin.LogLevelSuccess, fmt.Sprintf("Host %q registered and connected!", hostName))
@@ -157,7 +175,7 @@ func generateDockerCompose(hostName, backendURL, token string, orgID uint64, der
 	sb.WriteString("\n")
 	sb.WriteString("services:\n")
 	sb.WriteString("  prysm-agent:\n")
-	sb.WriteString("    image: ghcr.io/prysmsh/prysm-agent:latest-docker\n")
+	sb.WriteString("    image: ghcr.io/prysmsh/prysm/agent:latest-docker\n")
 	sb.WriteString("    container_name: prysm-agent\n")
 	sb.WriteString("    restart: unless-stopped\n")
 	sb.WriteString("    network_mode: host\n")
@@ -180,7 +198,7 @@ func generateDockerCompose(hostName, backendURL, token string, orgID uint64, der
 	if fullStack {
 		sb.WriteString("\n")
 		sb.WriteString("  prysm-ebpf-collector:\n")
-		sb.WriteString("    image: ghcr.io/prysmsh/ebpf-collector:latest\n")
+		sb.WriteString("    image: ghcr.io/prysmsh/prysm/ebpf-collector:latest\n")
 		sb.WriteString("    container_name: prysm-ebpf-collector\n")
 		sb.WriteString("    restart: unless-stopped\n")
 		sb.WriteString("    network_mode: host\n")

@@ -99,7 +99,7 @@ func TestBuildCobraCommand_Leaf(t *testing.T) {
 			},
 		},
 	}
-	cmd := BuildCobraCommand(p.Manifest().Commands[0], p)
+	cmd := BuildCobraCommand(p.Manifest().Commands[0], p, nil)
 	if cmd.Use != "leaf" {
 		t.Errorf("Use = %q", cmd.Use)
 	}
@@ -130,7 +130,7 @@ func TestBuildCobraCommand_ExecuteReturnsError(t *testing.T) {
 	}
 	// Override Execute to return error
 	p.executeResp = &ExecuteResponse{ExitCode: 0, Error: "something went wrong"}
-	cmd := BuildCobraCommand(p.Manifest().Commands[0], p)
+	cmd := BuildCobraCommand(p.Manifest().Commands[0], p, nil)
 
 	err := cmd.RunE(cmd, []string{})
 	if err == nil {
@@ -138,6 +138,26 @@ func TestBuildCobraCommand_ExecuteReturnsError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "something went wrong") {
 		t.Errorf("error = %v", err)
+	}
+}
+
+func TestBuildCobraCommand_ExecuteReturnsStdout(t *testing.T) {
+	p := &mockPlugin{
+		manifest: Manifest{
+			Commands: []CommandSpec{
+				{Name: "out", Short: "Prints"},
+			},
+		},
+		executeResp: &ExecuteResponse{ExitCode: 0, Stdout: "hello from plugin\n"},
+	}
+	cmd := BuildCobraCommand(p.Manifest().Commands[0], p, nil)
+	err := cmd.RunE(cmd, []string{})
+	if err != nil {
+		t.Fatalf("RunE: %v", err)
+	}
+	// Stdout was printed to os.Stdout; we can't easily capture without redirecting
+	if p.runArgs == nil || len(p.runArgs) < 1 || p.runArgs[0] != "out" {
+		t.Errorf("runArgs = %v", p.runArgs)
 	}
 }
 
@@ -155,7 +175,7 @@ func TestBuildCobraCommand_WithSubcommands(t *testing.T) {
 			},
 		},
 	}
-	cmd := BuildCobraCommand(p.Manifest().Commands[0], p)
+	cmd := BuildCobraCommand(p.Manifest().Commands[0], p, nil)
 	if len(cmd.Commands()) != 1 {
 		t.Fatalf("subcommands = %d", len(cmd.Commands()))
 	}
@@ -173,7 +193,7 @@ func TestBuildCobraCommand_DisableFlagParsing(t *testing.T) {
 			},
 		},
 	}
-	cmd := BuildCobraCommand(p.Manifest().Commands[0], p)
+	cmd := BuildCobraCommand(p.Manifest().Commands[0], p, nil)
 	if !cmd.DisableFlagParsing {
 		t.Error("DisableFlagParsing should be true")
 	}

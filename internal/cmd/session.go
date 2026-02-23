@@ -4,8 +4,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/fatih/color"
 	"github.com/spf13/cobra"
+
+	"github.com/prysmsh/cli/internal/style"
 )
 
 func newSessionCommand() *cobra.Command {
@@ -33,14 +34,16 @@ func newSessionStatusCommand() *cobra.Command {
 				return err
 			}
 			if sess == nil {
-				color.New(color.FgYellow).Println("No active session detected. Run `prysm login` to authenticate.")
+				fmt.Println(style.Warning.Render("No active session detected. Run `prysm login` to authenticate."))
 				return nil
 			}
 
 			expiry := sess.ExpiresAt()
-			statusColor := color.New(color.FgGreen)
-			if sess.IsExpired(5 * time.Minute) {
-				statusColor = color.New(color.FgRed)
+			expired := sess.IsExpired(0)
+			nearExpiry := sess.IsExpired(5 * time.Minute)
+			statusStyle := style.Success
+			if nearExpiry {
+				statusStyle = style.Error
 			}
 
 			fmt.Printf("Identity: %s (%s)\n", sess.User.Name, sess.Email)
@@ -50,7 +53,10 @@ func newSessionStatusCommand() *cobra.Command {
 			fmt.Printf("DERP Relay: %s\n", sess.DERPServerURL)
 			fmt.Printf("Issued: %s\n", sess.SavedAt.Format(time.RFC3339))
 			if !expiry.IsZero() {
-				statusColor.Printf("Expires: %s\n", expiry.Format(time.RFC3339))
+				fmt.Print(statusStyle.Render(fmt.Sprintf("Expires: %s\n", expiry.Format(time.RFC3339))))
+			}
+			if expired {
+				fmt.Println(style.Error.Render("Session expired. Run `prysm login` to re-authenticate."))
 			}
 			return nil
 		},
@@ -85,6 +91,10 @@ func newSessionRefreshCommand() *cobra.Command {
 				provider = "email"
 			}
 
+			// In SSH there is no browser; use device-code unless an explicit provider was set.
+			if provider == "" && isSSHSession() {
+				return runDeviceCodeLogin(cmd.Context(), app)
+			}
 			return runOAuthLogin(cmd.Context(), app, provider)
 		},
 	}

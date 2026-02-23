@@ -4,8 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/fatih/color"
 	"github.com/spf13/cobra"
+
+	"github.com/prysmsh/cli/internal/style"
 )
 
 func newPluginCommand() *cobra.Command {
@@ -16,6 +17,8 @@ func newPluginCommand() *cobra.Command {
 
 	cmd.AddCommand(newPluginListCommand())
 	cmd.AddCommand(newPluginInfoCommand())
+	cmd.AddCommand(newPluginWasmCommand())
+	cmd.AddCommand(newPluginMarketplaceCommand())
 
 	return cmd
 }
@@ -36,16 +39,14 @@ func newPluginListCommand() *cobra.Command {
 				return nil
 			}
 
-			bold := color.New(color.Bold)
 			for _, p := range plugins {
-				typeColor := color.New(color.FgCyan)
+				typeStyle := style.Info
 				if p.Type == "external" {
-					typeColor = color.New(color.FgYellow)
+					typeStyle = style.Warning
 				}
 
-				bold.Printf("  %s", p.Name)
-				fmt.Print(" ")
-				typeColor.Printf("(%s)", p.Type)
+				fmt.Print(style.Bold.Render("  "+p.Name) + " ")
+				fmt.Print(typeStyle.Render("(" + p.Type + ")"))
 				if p.Version != "" {
 					fmt.Printf(" v%s", p.Version)
 				}
@@ -80,9 +81,8 @@ func newPluginInfoCommand() *cobra.Command {
 			}
 
 			manifest := p.Manifest()
-			bold := color.New(color.Bold)
 
-			bold.Printf("Plugin: %s\n", manifest.Name)
+			fmt.Print(style.Bold.Render(fmt.Sprintf("Plugin: %s\n", manifest.Name)))
 			fmt.Printf("Version: %s\n", manifest.Version)
 			fmt.Printf("Description: %s\n", manifest.Description)
 
@@ -98,7 +98,7 @@ func newPluginInfoCommand() *cobra.Command {
 	}
 }
 
-func printCommandTree(spec interface{ }, indent string) {
+func printCommandTree(spec interface{}, indent string) {
 	// Use type assertion to handle the CommandSpec
 	type cmdSpec struct {
 		Name        string
@@ -116,8 +116,7 @@ func init() {
 
 // printPluginCommandTree prints a command spec tree with indentation.
 func printPluginCommandTree(name, short string, subNames []string, indent string) {
-	bold := color.New(color.Bold)
-	bold.Printf("%s%s", indent, name)
+	fmt.Print(style.Bold.Render(indent + name))
 	if short != "" {
 		fmt.Printf(" — %s", short)
 	}

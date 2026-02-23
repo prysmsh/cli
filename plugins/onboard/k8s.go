@@ -5,14 +5,14 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
 
-	"github.com/warp-run/prysm-cli/internal/plugin"
+	"github.com/prysmsh/cli/internal/charts"
+	"github.com/prysmsh/cli/internal/plugin"
 )
-
-const defaultChartRef = "oci://ghcr.io/prysmsh/charts/prysm-agent"
 
 // k8sFlags holds the parsed CLI flags for non-interactive mode.
 type k8sFlags struct {
@@ -27,6 +27,7 @@ type k8sFlags struct {
 	wait         bool
 	timeout      string
 	skipPoll     bool
+	collector    bool // enable eBPF collector
 }
 
 // stringSlice implements flag.Value for repeatable --set / --set-json flags.
@@ -46,7 +47,7 @@ func parseK8sFlags(args []string) (*k8sFlags, error) {
 	fs.StringVar(&f.name, "name", "", "cluster name (required for non-interactive)")
 	fs.StringVar(&f.namespace, "namespace", "prysm-system", "Kubernetes namespace")
 	fs.StringVar(&f.kubeCtx, "kube-context", "", "kubectl/helm context")
-	fs.StringVar(&f.chart, "chart", defaultChartRef, "Helm chart reference")
+	fs.StringVar(&f.chart, "chart", "", "Helm chart override (default: embedded)")
 	fs.StringVar(&f.backendURL, "backend-url", "", "agent-facing backend URL (default: derived from --api-url)")
 	fs.StringVar(&f.agentDERPURL, "agent-derp-url", "", "agent-facing DERP URL (default: from --derp-url)")
 	fs.Var(&f.setValues, "set", "extra helm --set value (repeatable)")
@@ -54,6 +55,7 @@ func parseK8sFlags(args []string) (*k8sFlags, error) {
 	fs.BoolVar(&f.wait, "wait", false, "pass --wait to helm")
 	fs.StringVar(&f.timeout, "timeout", "", "pass --timeout to helm (e.g. 120s)")
 	fs.BoolVar(&f.skipPoll, "skip-poll", false, "skip post-install registration polling")
+	fs.BoolVar(&f.collector, "collector", false, "enable eBPF collector")
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err
@@ -68,7 +70,7 @@ func parseK8sFlags(args []string) (*k8sFlags, error) {
 // It verifies auth, checks for helm, prompts for cluster details,
 // creates an agent token, installs the Helm chart, and polls for registration.
 func (p *OnboardPlugin) onboardK8s(ctx context.Context, req plugin.ExecuteRequest) plugin.ExecuteResponse {
-	// Parse flags from raw args (everything after "k8s" subcommand name).
+	// Parse flags from raw args (everything after "kube" subcommand name).
 	var extraArgs []string
 	if len(req.Args) > 1 {
 		extraArgs = req.Args[1:]
@@ -94,13 +96,14 @@ func (p *OnboardPlugin) onboardK8s(ctx context.Context, req plugin.ExecuteReques
 	}
 	_ = p.host.Log(ctx, plugin.LogLevelSuccess, "helm found")
 
-	// 3. Resolve cluster name and namespace
+	// 3. Resolve cluster name, namespace, and collector option
 	var clusterName, namespace, kubeCtx, chartRef string
 	var extraSets, extraSetJSONs []string
 	var backendURLOverride, derpURLOverride string
 	var helmWait bool
 	var helmTimeout string
 	var skipPoll bool
+	var enableCollector bool
 
 	if interactive {
 		// Interactive prompts
@@ -116,7 +119,11 @@ func (p *OnboardPlugin) onboardK8s(ctx context.Context, req plugin.ExecuteReques
 		if namespace == "" {
 			namespace = "prysm-system"
 		}
-		chartRef = defaultChartRef
+
+		enableCollector, err = p.host.PromptConfirm(ctx, "Install eBPF collector?")
+		if err != nil {
+			_ = p.host.Log(ctx, plugin.LogLevelDebug, fmt.Sprintf("collector prompt error: %v", err))
+		}
 	} else {
 		clusterName = flags.name
 		namespace = flags.namespace
@@ -129,30 +136,112 @@ func (p *OnboardPlugin) onboardK8s(ctx context.Context, req plugin.ExecuteReques
 		helmWait = flags.wait
 		helmTimeout = flags.timeout
 		skipPoll = flags.skipPoll
+		enableCollector = flags.collector
 	}
 
-	// 4. Create agent token via API
-	_ = p.host.Log(ctx, plugin.LogLevelInfo, "Creating agent token...")
-	tokenBody, _ := json.Marshal(map[string]interface{}{
-		"name":        fmt.Sprintf("agent-%s", clusterName),
-		"permissions": []string{"*"},
+	// 4. Create a temporary org-scoped agent token for registration
+	var registerTokenResp struct {
+		Token struct {
+			ID    uint   `json:"id"`
+			Token string `json:"token"`
+		} `json:"token"`
+	}
+	tokenErr := withSpinner("Creating agent token...", func() error {
+		tokenBody, _ := json.Marshal(map[string]interface{}{
+			"name":        fmt.Sprintf("agent-%s-bootstrap", clusterName),
+			"permissions": []string{"*"},
+		})
+		status, respBody, err := p.host.APIRequest(ctx, "POST", "/tokens", tokenBody)
+		if err != nil {
+			return fmt.Errorf("failed to create token: %v", err)
+		}
+		if status < 200 || status >= 300 {
+			return fmt.Errorf("failed to create token (HTTP %d): %s", status, string(respBody))
+		}
+		if err := json.Unmarshal(respBody, &registerTokenResp); err != nil {
+			return fmt.Errorf("failed to parse token response: %v", err)
+		}
+		if registerTokenResp.Token.Token == "" {
+			return fmt.Errorf("empty token in response: %s", string(respBody))
+		}
+		return nil
 	})
-	status, respBody, err := p.host.APIRequest(ctx, "POST", "/tokens", tokenBody)
-	if err != nil {
-		return plugin.ExecuteResponse{ExitCode: 1, Error: fmt.Sprintf("failed to create token: %v", err)}
-	}
-	if status < 200 || status >= 300 {
-		return plugin.ExecuteResponse{ExitCode: 1, Error: fmt.Sprintf("failed to create token (HTTP %d): %s", status, string(respBody))}
-	}
-
-	var tokenResp struct {
-		Token string `json:"token"`
-		ID    uint   `json:"id"`
-	}
-	if err := json.Unmarshal(respBody, &tokenResp); err != nil {
-		return plugin.ExecuteResponse{ExitCode: 1, Error: "failed to parse token response"}
+	if tokenErr != nil {
+		return plugin.ExecuteResponse{ExitCode: 1, Error: tokenErr.Error()}
 	}
 	_ = p.host.Log(ctx, plugin.LogLevelSuccess, "Agent token created")
+
+	// 4b. Register cluster to obtain numeric cluster ID
+	var clusterID uint
+	var clusterPublicID string
+	registerErr := withSpinner("Registering cluster...", func() error {
+		payload, _ := json.Marshal(map[string]interface{}{
+			"cluster_name": clusterName,
+			"agent_token":  registerTokenResp.Token.Token,
+			"agent_type":   "cli-onboard",
+		})
+		status, respBody, err := p.host.APIRequest(ctx, "POST", "/clusters/register", payload)
+		if err != nil {
+			return fmt.Errorf("failed to register cluster: %v", err)
+		}
+		if status < 200 || status >= 300 {
+			return fmt.Errorf("failed to register cluster (HTTP %d): %s", status, string(respBody))
+		}
+		var regResp struct {
+			ClusterID  uint   `json:"cluster_id"`
+			PublicID   string `json:"public_id"`
+			AgentToken string `json:"agent_token"`
+		}
+		if err := json.Unmarshal(respBody, &regResp); err != nil {
+			return fmt.Errorf("failed to parse register response: %v", err)
+		}
+		if regResp.ClusterID == 0 {
+			return fmt.Errorf("missing cluster_id in register response: %s", string(respBody))
+		}
+		clusterID = regResp.ClusterID
+		clusterPublicID = regResp.PublicID
+		return nil
+	})
+	if registerErr != nil {
+		return plugin.ExecuteResponse{ExitCode: 1, Error: registerErr.Error()}
+	}
+	if clusterPublicID == "" {
+		clusterPublicID = fmt.Sprintf("%d", clusterID)
+	}
+	_ = p.host.Log(ctx, plugin.LogLevelSuccess, fmt.Sprintf("Cluster registration confirmed (id: %d)", clusterID))
+
+	// 4c. Create a cluster-bound agent token for the installed agent
+	var agentTokenResp struct {
+		Token struct {
+			ID    uint   `json:"id"`
+			Token string `json:"token"`
+		} `json:"token"`
+	}
+	tokenErr = withSpinner("Creating cluster-bound agent token...", func() error {
+		tokenBody, _ := json.Marshal(map[string]interface{}{
+			"name":        fmt.Sprintf("agent-%s", clusterName),
+			"cluster_id":  clusterID,
+			"permissions": []string{"*"},
+		})
+		status, respBody, err := p.host.APIRequest(ctx, "POST", "/tokens", tokenBody)
+		if err != nil {
+			return fmt.Errorf("failed to create cluster token: %v", err)
+		}
+		if status < 200 || status >= 300 {
+			return fmt.Errorf("failed to create cluster token (HTTP %d): %s", status, string(respBody))
+		}
+		if err := json.Unmarshal(respBody, &agentTokenResp); err != nil {
+			return fmt.Errorf("failed to parse cluster token response: %v", err)
+		}
+		if agentTokenResp.Token.Token == "" {
+			return fmt.Errorf("empty cluster token in response: %s", string(respBody))
+		}
+		return nil
+	})
+	if tokenErr != nil {
+		return plugin.ExecuteResponse{ExitCode: 1, Error: tokenErr.Error()}
+	}
+	_ = p.host.Log(ctx, plugin.LogLevelSuccess, "Cluster-bound agent token created")
 
 	// 5. Get config for backend URL and DERP URL
 	cfg, err := p.host.GetConfig(ctx)
@@ -172,14 +261,24 @@ func (p *OnboardPlugin) onboardK8s(ctx context.Context, req plugin.ExecuteReques
 		derpURL = cfg.DERPURL
 	}
 
-	// 6. Install helm chart
-	_ = p.host.Log(ctx, plugin.LogLevelInfo, "Installing Prysm agent Helm chart...")
+	// 6. Resolve chart — use embedded chart unless overridden via --chart
+	if chartRef == "" {
+		extracted, cleanupDir, extractErr := charts.ExtractAgentChart()
+		if extractErr != nil {
+			return plugin.ExecuteResponse{ExitCode: 1, Error: fmt.Sprintf("extract embedded chart: %v", extractErr)}
+		}
+		defer os.RemoveAll(cleanupDir)
+		chartRef = extracted
+	}
+
 	helmArgs := []string{
 		"upgrade", "--install", "prysm-agent",
 		chartRef,
 		"--namespace", namespace,
 		"--create-namespace",
-		"--set", fmt.Sprintf("configSecret.data.AGENT_TOKEN=%s", tokenResp.Token),
+		"--set", "image.pullPolicy=Always", // re-run reconciles with latest image
+		"--set", fmt.Sprintf("configSecret.data.AGENT_TOKEN=%s", agentTokenResp.Token.Token),
+		"--set", fmt.Sprintf("configSecret.data.CLUSTER_ID=%s", clusterPublicID),
 		"--set", fmt.Sprintf("configSecret.data.BACKEND_URL=%s", backendURL),
 		"--set", fmt.Sprintf("configSecret.data.CLUSTER_NAME=%s", clusterName),
 		"--set", fmt.Sprintf("configSecret.data.ORGANIZATION_ID=%d", auth.OrgID),
@@ -199,6 +298,11 @@ func (p *OnboardPlugin) onboardK8s(ctx context.Context, req plugin.ExecuteReques
 	for _, sj := range extraSetJSONs {
 		helmArgs = append(helmArgs, "--set-json", sj)
 	}
+	if enableCollector {
+		helmArgs = append(helmArgs,
+			"--set", "configSecret.data.METRICS_ENABLE_EBPF=true",
+		)
+	}
 	if helmWait {
 		helmArgs = append(helmArgs, "--wait")
 	}
@@ -206,46 +310,64 @@ func (p *OnboardPlugin) onboardK8s(ctx context.Context, req plugin.ExecuteReques
 		helmArgs = append(helmArgs, "--timeout", helmTimeout)
 	}
 
-	cmd := exec.CommandContext(ctx, "helm", helmArgs...)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		_ = p.host.Log(ctx, plugin.LogLevelError, string(output))
-		return plugin.ExecuteResponse{ExitCode: 1, Error: fmt.Sprintf("helm install failed: %v", err)}
+	var helmOutput []byte
+	helmErr := withSpinner("Installing Prysm agent...", func() error {
+		cmd := exec.CommandContext(ctx, "helm", helmArgs...)
+		out, err := cmd.CombinedOutput()
+		helmOutput = out
+		if err != nil {
+			return fmt.Errorf("helm install failed: %v\n%s", err, string(out))
+		}
+		return nil
+	})
+	if helmErr != nil {
+		_ = p.host.Log(ctx, plugin.LogLevelError, helmErr.Error())
+		return plugin.ExecuteResponse{ExitCode: 1, Error: helmErr.Error()}
 	}
 	_ = p.host.Log(ctx, plugin.LogLevelSuccess, "Helm chart installed")
-	_ = p.host.Log(ctx, plugin.LogLevelPlain, string(output))
+	_ = p.host.Log(ctx, plugin.LogLevelPlain, string(helmOutput))
+
+	// Rollout restart so pods pull latest image (re-run reconciles with registry)
+	rolloutArgs := []string{"rollout", "restart", "daemonset/prysm-agent", "-n", namespace}
+	if kubeCtx != "" {
+		rolloutArgs = append(rolloutArgs, "--context", kubeCtx)
+	}
+	if cmd := exec.CommandContext(ctx, "kubectl", rolloutArgs...); cmd.Run() != nil {
+		// Fallback: may be Deployment
+		rolloutArgs[2] = "deployment/prysm-agent"
+		_ = exec.CommandContext(ctx, "kubectl", rolloutArgs...).Run()
+	}
 
 	// 7. Poll for agent registration (unless --skip-poll)
 	if skipPoll {
 		_ = p.host.Log(ctx, plugin.LogLevelInfo, "Skipping registration poll (--skip-poll)")
 	} else {
-		_ = p.host.Log(ctx, plugin.LogLevelInfo, "Waiting for agent to register...")
 		registered := false
-		for i := 0; i < 30; i++ {
-			time.Sleep(2 * time.Second)
-			status, body, err := p.host.APIRequest(ctx, "GET", "/clusters", nil)
-			if err != nil || status != 200 {
-				continue
-			}
-			var resp struct {
-				Clusters []struct {
-					Name   string `json:"name"`
-					Status string `json:"status"`
-				} `json:"clusters"`
-			}
-			if err := json.Unmarshal(body, &resp); err != nil {
-				continue
-			}
-			for _, c := range resp.Clusters {
-				if strings.EqualFold(c.Name, clusterName) && c.Status == "connected" {
-					registered = true
-					break
+		_ = withSpinner("Waiting for agent to register...", func() error {
+			for i := 0; i < 30; i++ {
+				time.Sleep(2 * time.Second)
+				st, body, err := p.host.APIRequest(ctx, "GET", "/clusters", nil)
+				if err != nil || st != 200 {
+					continue
+				}
+				var resp struct {
+					Clusters []struct {
+						Name   string `json:"name"`
+						Status string `json:"status"`
+					} `json:"clusters"`
+				}
+				if err := json.Unmarshal(body, &resp); err != nil {
+					continue
+				}
+				for _, c := range resp.Clusters {
+					if strings.EqualFold(c.Name, clusterName) && c.Status == "connected" {
+						registered = true
+						return nil
+					}
 				}
 			}
-			if registered {
-				break
-			}
-		}
+			return nil
+		})
 
 		if registered {
 			_ = p.host.Log(ctx, plugin.LogLevelSuccess, fmt.Sprintf("Cluster %q registered and connected!", clusterName))
@@ -258,7 +380,7 @@ func (p *OnboardPlugin) onboardK8s(ctx context.Context, req plugin.ExecuteReques
 	_ = p.host.Log(ctx, plugin.LogLevelPlain, "")
 	_ = p.host.Log(ctx, plugin.LogLevelPlain, "Next steps:")
 	_ = p.host.Log(ctx, plugin.LogLevelPlain, "  prysm clusters              — view registered clusters")
-	_ = p.host.Log(ctx, plugin.LogLevelPlain, "  prysm connect k8s           — get kubeconfig for cluster access")
+	_ = p.host.Log(ctx, plugin.LogLevelPlain, "  prysm connect kube           — get kubeconfig for cluster access")
 	_ = p.host.Log(ctx, plugin.LogLevelPlain, "  prysm security events       — view security events")
 
 	return plugin.ExecuteResponse{ExitCode: 0}

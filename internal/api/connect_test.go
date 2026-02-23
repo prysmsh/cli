@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/warp-run/prysm-cli/internal/api"
+	"github.com/prysmsh/cli/internal/api"
 )
 
 func TestConnectListClusters(t *testing.T) {
@@ -48,6 +48,36 @@ func TestConnectListClusters_Error(t *testing.T) {
 	_, err := client.ListClusters(context.Background())
 	if err == nil {
 		t.Fatal("expected error from ListClusters")
+	}
+}
+
+func TestConnectKubernetes_WithoutNamespaceOrReason(t *testing.T) {
+	var capturedBody map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&capturedBody)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(api.ClusterConnectResponse{
+			Cluster:    api.Cluster{ID: 1, Name: "c"},
+			Session:    api.KubernetesSessionInfo{},
+			Kubeconfig: api.KubeconfigMaterial{Value: "e30="},
+		})
+	}))
+	defer srv.Close()
+
+	client := api.NewClient(srv.URL)
+	client.SetToken("token")
+	_, err := client.ConnectKubernetes(context.Background(), 1, "", "")
+	if err != nil {
+		t.Fatalf("ConnectKubernetes: %v", err)
+	}
+	if _, has := capturedBody["namespace"]; has {
+		t.Error("payload should not contain namespace when empty")
+	}
+	if _, has := capturedBody["reason"]; has {
+		t.Error("payload should not contain reason when empty")
+	}
+	if capturedBody["cluster_id"] != float64(1) {
+		t.Errorf("cluster_id = %v", capturedBody["cluster_id"])
 	}
 }
 

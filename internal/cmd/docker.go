@@ -6,8 +6,10 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/fatih/color"
 	"github.com/spf13/cobra"
+
+	"github.com/prysmsh/cli/internal/style"
+	"github.com/prysmsh/cli/internal/ui"
 )
 
 var sshTargetRE = regexp.MustCompile(`^[a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+$`)
@@ -88,15 +90,16 @@ func dockerContextCreate(name, target string) error {
 	// Ignore errors — the context may not exist yet.
 	_ = execDocker("context", "rm", "-f", name)
 
-	if err := execDocker("context", "create", name, "--docker", "host=ssh://"+target); err != nil {
-		return fmt.Errorf("create docker context: %w", err)
-	}
-
-	if err := dockerContextUse(name); err != nil {
+	if err := ui.WithSpinner("Creating Docker context...", func() error {
+		if err := execDocker("context", "create", name, "--docker", "host=ssh://"+target); err != nil {
+			return fmt.Errorf("create docker context: %w", err)
+		}
+		return dockerContextUse(name)
+	}); err != nil {
 		return err
 	}
 
-	color.New(color.FgGreen).Printf("Docker context %q created and activated (ssh://%s)\n", name, target)
+	fmt.Println(style.Success.Render(fmt.Sprintf("Docker context %q created and activated (ssh://%s)", name, target)))
 	return nil
 }
 
@@ -106,7 +109,7 @@ func dockerContextUse(name string) error {
 		return fmt.Errorf("switch docker context: %w", err)
 	}
 	if name == "default" {
-		color.New(color.FgGreen).Println("Switched back to default Docker context")
+		fmt.Println(style.Success.Render("Switched back to default Docker context"))
 	}
 	return nil
 }

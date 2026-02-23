@@ -27,6 +27,7 @@ type CommandSpec struct {
 	Long               string
 	Subcommands        []CommandSpec
 	DisableFlagParsing bool // pass all args (including --flags) raw to Execute
+	Hidden             bool // hide from help output but still callable
 }
 
 // ExecuteRequest contains the arguments for a plugin command invocation.

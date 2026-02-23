@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 )
 
 // APIError represents an error returned by the control plane API.
@@ -37,6 +38,14 @@ func parseAPIError(resp *http.Response) *APIError {
 	}{}
 	if len(body) > 0 {
 		if json.Unmarshal(body, &errPayload) != nil {
+			// Non-JSON response (e.g. HTML error page from a proxy/CDN).
+			// Return a concise message instead of dumping raw markup.
+			if looksLikeHTML(body) {
+				return &APIError{
+					StatusCode: resp.StatusCode,
+					Message:    fmt.Sprintf("server returned %d (%s)", resp.StatusCode, http.StatusText(resp.StatusCode)),
+				}
+			}
 			return &APIError{
 				StatusCode: resp.StatusCode,
 				Message:    string(body),
@@ -70,4 +79,10 @@ func parseAPIError(resp *http.Response) *APIError {
 		Message:    msg,
 		Details:    details,
 	}
+}
+
+// looksLikeHTML reports whether body appears to be an HTML document.
+func looksLikeHTML(body []byte) bool {
+	s := strings.TrimSpace(string(body))
+	return strings.HasPrefix(s, "<!") || strings.HasPrefix(s, "<html") || strings.HasPrefix(s, "<HTML")
 }

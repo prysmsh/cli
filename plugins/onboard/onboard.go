@@ -7,7 +7,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/warp-run/prysm-cli/internal/plugin"
+	"github.com/prysmsh/cli/internal/plugin"
+	"github.com/prysmsh/cli/internal/ui"
 )
 
 // OnboardPlugin is a builtin plugin that provides agent onboarding commands.
@@ -38,7 +39,7 @@ func (p *OnboardPlugin) Manifest() plugin.Manifest {
 				Short: "Onboard a new agent (Kubernetes or Docker)",
 				Subcommands: []plugin.CommandSpec{
 					{
-						Name:               "k8s",
+						Name:               "kube",
 						Short:              "Onboard a Kubernetes cluster using Helm",
 						DisableFlagParsing: true,
 					},
@@ -47,8 +48,14 @@ func (p *OnboardPlugin) Manifest() plugin.Manifest {
 						Short: "Onboard a Docker host (generates docker-compose.yml)",
 					},
 					{
-						Name:  "docker-compose",
-						Short: "Onboard a Docker host with full stack (agent + eBPF collector)",
+						Name:               "collector",
+						Short:              "Add eBPF collector to an existing cluster",
+						DisableFlagParsing: true,
+					},
+					{
+						Name:   "docker-compose",
+						Short:  "Onboard a Docker host with full stack (agent + eBPF collector)",
+						Hidden: true,
 					},
 				},
 			},
@@ -63,12 +70,14 @@ func (p *OnboardPlugin) Execute(ctx context.Context, req plugin.ExecuteRequest) 
 	}
 
 	switch req.Args[0] {
-	case "k8s":
+	case "kube":
 		return p.onboardK8s(ctx, req)
 	case "docker":
 		return p.onboardDocker(ctx, req)
 	case "docker-compose":
 		return p.onboardDockerCompose(ctx, req)
+	case "collector":
+		return p.onboardCollector(ctx, req)
 	default:
 		return p.showMenu(ctx)
 	}
@@ -80,9 +89,9 @@ func (p *OnboardPlugin) showMenu(ctx context.Context) plugin.ExecuteResponse {
 	_ = p.host.Log(ctx, plugin.LogLevelInfo, "Prysm Agent Onboarding")
 	_ = p.host.Log(ctx, plugin.LogLevelPlain, "")
 	_ = p.host.Log(ctx, plugin.LogLevelPlain, "Choose an onboarding method:")
-	_ = p.host.Log(ctx, plugin.LogLevelPlain, "  1. Kubernetes cluster (Helm chart)")
-	_ = p.host.Log(ctx, plugin.LogLevelPlain, "  2. Docker host (single container)")
-	_ = p.host.Log(ctx, plugin.LogLevelPlain, "  3. Docker Compose (full stack)")
+	_ = p.host.Log(ctx, plugin.LogLevelPlain, "  1. Kubernetes cluster (Helm)")
+	_ = p.host.Log(ctx, plugin.LogLevelPlain, "  2. Docker host")
+	_ = p.host.Log(ctx, plugin.LogLevelPlain, "  3. Add eBPF collector to existing cluster")
 	_ = p.host.Log(ctx, plugin.LogLevelPlain, "")
 
 	choice, err := p.host.PromptInput(ctx, "Enter choice (1-3)", false)
@@ -97,8 +106,11 @@ func (p *OnboardPlugin) showMenu(ctx context.Context) plugin.ExecuteResponse {
 	case "2":
 		return p.onboardDocker(ctx, plugin.ExecuteRequest{})
 	case "3":
-		return p.onboardDockerCompose(ctx, plugin.ExecuteRequest{})
+		return p.onboardCollector(ctx, plugin.ExecuteRequest{})
 	default:
 		return plugin.ExecuteResponse{ExitCode: 1, Error: "invalid choice"}
 	}
 }
+
+// withSpinner is a convenience alias for ui.WithSpinner.
+var withSpinner = ui.WithSpinner

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/warp-run/prysm-cli/internal/api"
+	"github.com/prysmsh/cli/internal/api"
 )
 
 func TestCreateTunnel(t *testing.T) {
@@ -271,6 +271,43 @@ func TestDeleteTunnelByIDInvalid(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "invalid tunnel id") {
 		t.Errorf("error = %v", err)
+	}
+}
+
+func TestListTunnels_NilTunnels(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"tunnels": nil, "total": 0})
+	}))
+	defer srv.Close()
+
+	client := api.NewClient(srv.URL)
+	tunnels, err := client.ListTunnels(context.Background(), "")
+	if err != nil {
+		t.Fatalf("ListTunnels: %v", err)
+	}
+	if tunnels == nil {
+		t.Fatal("expected non-nil empty slice")
+	}
+	if len(tunnels) != 0 {
+		t.Errorf("len(tunnels) = %d, want 0", len(tunnels))
+	}
+}
+
+func TestCreateTunnel_DoError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte("internal error"))
+	}))
+	defer srv.Close()
+
+	client := api.NewClient(srv.URL)
+	client.SetToken("token")
+	_, err := client.CreateTunnel(context.Background(), api.TunnelCreateRequest{
+		Port: 5432, TargetDeviceID: "dev-1",
+	})
+	if err == nil {
+		t.Fatal("expected error from CreateTunnel when API returns 500")
 	}
 }
 

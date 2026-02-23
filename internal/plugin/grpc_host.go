@@ -3,7 +3,7 @@ package plugin
 import (
 	"context"
 
-	pluginv1 "github.com/warp-run/prysm-cli/proto/plugin/v1"
+	pluginv1 "github.com/prysmsh/cli/proto/plugin/v1"
 )
 
 // GRPCHostServer implements the HostService gRPC server.

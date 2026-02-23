@@ -1,0 +1,433 @@
+# When hostNetwork: true, port 8080 may conflict on some nodes (e.g. another process).
+# Override to use a different port (e.g. 8081).
+httpPort: 8080
+
+image:
+  repository: ghcr.io/prysmsh/agent
+  # Available image variants:
+  # - latest (alias for alpine) - Standard Alpine 3.21 based image (~50MB)
+  # - alpine - Explicitly use Alpine-based image with shell and debug tools
+  # - distroless - Minimal distroless image (~30MB, recommended for production)
+  #
+  # Security: The distroless variant provides:
+  #   - 70% smaller image size
+  #   - No shell or package manager (reduced attack surface)
+  #   - Fewer CVE vulnerabilities (0 vs 0-2 in Alpine)
+  #   - Runs as non-root by default (uid 65532)
+  #
+  # For production, use: distroless
+  # For development/debugging, use: latest or alpine
+  tag: latest
+  pullPolicy: IfNotPresent
+
+controller:
+  kind: DaemonSet
+  replicas: 1
+  strategy:
+    type: Recreate
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+rbac:
+  create: true
+
+configSecret:
+  create: true
+  name: ""
+  existingSecret: ""
+  annotations: {}
+  data:
+    CLUSTER_ID: ""
+    CLUSTER_NAME: ""
+    REGION: us-east-1
+    DERP_SERVER: wss://derp.prysm.sh/derp
+    DERP_SERVERS: wss://derp.prysm.sh/derp
+    AGENT_TOKEN: example-agent-token
+    BACKEND_URL: https://api.prysm.sh
+    ORGANIZATION_ID: "1"
+    ENABLE_LOGGING: "true"
+    # Agent deploys and manages a log-collector DaemonSet when LOG_COLLECTOR_MODE=daemonset (see spec/KUBE_LOG_ARCHITECTURE.md)
+    LOG_COLLECTOR_MODE: "daemonset"
+    LOG_COLLECTOR_IMAGE: "ghcr.io/prysmsh/fluent-bit:4.2.2-1"
+    # How often to reconcile the log-collector DaemonSet (e.g. 30s for testing, 5m for production)
+    LOG_COLLECTOR_RECONCILE_INTERVAL: "5m"
+    LOG_INGESTION_URL: ""
+    LOG_PRIVATE_LINK_URL: ""
+    LOG_PRIVATE_LINK_KEY: ""
+    USE_PRIVATE_LINK: "false"
+    DERP_REGION: ""
+    LOG_ENABLE_STREAMING: "true"
+    LOG_BATCH_SIZE: "100"
+    LOG_BATCH_TIMEOUT: "30s"
+    LOG_COLLECTION_INTERVAL: "30s"
+    LOG_MAX_RETRIES: "3"
+    LOG_MAX_MESSAGE_SIZE: "32768"
+    LOG_SOURCES: "pod,event,system"
+    LOG_EXCLUDE_NAMESPACES: "kube-system,kube-public"
+    LOG_LEVELS: "info,warn,error,fatal"
+    AUTO_APPLY_LOG_SINKS: "true"
+    LOG_SINK_SYNC_INTERVAL: "10m"
+    DERP_SKIP_TLS_VERIFY: "false"
+    
+    # Metrics collection configuration
+    ENABLE_METRICS: "true"
+    METRICS_COLLECTION_INTERVAL: "30s"
+    METRICS_BATCH_SIZE: "50"
+    METRICS_BUFFER_SIZE: "500"
+    METRICS_ENABLE_SAMPLING: "true"
+    METRICS_SAMPLE_RATE: "1.0"
+    METRICS_MAX_CONCURRENCY: "3"
+    METRICS_RETENTION_PERIOD: "1h"
+    METRICS_COMPACTION_INTERVAL: "10m"
+    METRICS_ENABLE_SECURITY: "true"
+    METRICS_THREAT_DETECTION: "true"
+    METRICS_ANOMALY_THRESHOLD: "2.0"
+    METRICS_ENABLE_RAY: "false"
+    METRICS_ENABLE_EBPF: "true"
+
+    # Security scanner (Trivy) - container vulnerability scanning
+    SCAN_ENABLED: "true"
+    SCAN_INTERVAL: "1h"
+    SCAN_SEVERITY_THRESHOLD: "MEDIUM"
+    SCAN_NAMESPACES: ""
+    SCAN_EXCLUDE_NAMESPACES: "kube-system,kube-public"
+    SCAN_CACHE_ENABLED: "true"
+    SCAN_CACHE_TTL: "24h"
+    SCAN_CONCURRENT_SCANS: "5"
+    SCAN_TRIVY_PATH: "trivy"
+    SCAN_TRIVY_CACHE_DIR: ""
+    SCAN_SKIP_DB_UPDATE: "false"
+    SCAN_INSECURE: "false"
+    SCAN_TIMEOUT: "5m"
+    SCAN_MAX_CRITICAL: "0"
+    SCAN_MAX_HIGH: "5"
+    SCAN_MAX_MEDIUM: "20"
+
+    # Prysm CNI - zero trust traffic redirect (agent deploys as operator)
+    # Config is fetched from backend when available; env vars are fallback.
+    # Set PRYSM_CNI_CONTROLLER_DISABLED: "true" to skip the controller entirely.
+    PRYSM_CNI_ENABLED: "true"
+    PRYSM_CNI_RECONCILE_INTERVAL: "5m"
+    PRYSM_CNI_IMAGE: "ghcr.io/prysmsh/cni:latest"
+    PRYSM_CNI_TARGET_PORT: "15001"
+    PRYSM_CNI_EXCLUDE_NAMESPACES: "kube-system,kube-public,istio-system,prysm-system"
+
+    # ztunnel / Ambient mesh configuration (requires istiod - disable if using custom CA)
+    ZTUNNEL_ENABLED: "false"
+    ZTUNNEL_RECONCILE_INTERVAL: "5m"
+    ZTUNNEL_IMAGE: "docker.io/istio/ztunnel:1.28.3"
+    ZTUNNEL_CNI_IMAGE: "docker.io/istio/install-cni:1.28.3"
+    ZTUNNEL_LOG_LEVEL: "info"
+
+    # Honeypot images - for self-hosted/air-gapped clusters, use your own registry
+    # HONEYPOT_IMAGE_REGISTRY: "ghcr.io/myorg" → pulls ghcr.io/myorg/honeypot-cowrie:latest etc.
+    # HONEYPOT_IMAGE_PULL_SECRET: "my-registry-secret" → use existing secret in prysm-honeypots namespace
+    HONEYPOT_IMAGE_REGISTRY: ""
+    HONEYPOT_IMAGE_PULL_SECRET: ""
+    
+    # mTLS agent authentication
+    MTLS_BOOTSTRAP_TOKEN: ""
+    MTLS_CERT_PATH: "/var/lib/prysm/mtls"
+    MTLS_SKIP_VERIFY: "false"
+
+    # Tunnel Daemon - transparent mTLS proxy for zero-trust pod-to-pod encryption
+    # Works with prysm-cni to intercept traffic and wrap it in per-pod mTLS
+    TUNNEL_DAEMON_ENABLED: "true"
+    TUNNEL_DAEMON_OUTBOUND_PORT: "15001"
+    TUNNEL_DAEMON_INBOUND_PORT: "15002"
+    TUNNEL_DAEMON_CERT_TTL: "24h"
+    TUNNEL_DAEMON_BUFFER_SIZE: "32768"
+    # Deep Packet Inspection (DPI) - analyze traffic for threats
+    TUNNEL_DAEMON_DPI_ENABLED: "true"
+    TUNNEL_DAEMON_DPI_MODE: "detect"  # "detect" (log only) or "block" (block critical/high threats)
+
+podAnnotations: {}
+  # Example security annotations:
+  # seccomp.security.alpha.kubernetes.io/pod: runtime/default
+  # container.apparmor.security.beta.kubernetes.io/prysm-agent: runtime/default
+
+podLabels: {}
+  # Example labels:
+  # app.kubernetes.io/version: "1.0.0"
+  # security.policy/tier: high
+
+hostNetwork: true
+hostPID: true
+updateStrategy:
+  type: RollingUpdate
+
+# runAsRoot: true required for exit node (iptables, IP forwarding). Override with runAsRoot: false
+# and runAsUser: 1001 if cluster enforces runAsNonRoot (exit node will not work).
+runAsRoot: true
+
+podSecurityContext:
+  fsGroup: 1001
+  runAsNonRoot: true
+  runAsUser: 1001
+  runAsGroup: 1001
+
+containerSecurityContext:
+  # Note: Agent requires privileged mode for WireGuard, exit node (iptables, IP forwarding), and networking
+  privileged: true
+  capabilities:
+    add:
+      - NET_ADMIN      # Required for WireGuard and iptables
+      - SYS_MODULE     # Required for loading kernel modules
+      - SYS_ADMIN      # Required for namespace operations
+  runAsUser: 1001      # Used when runAsRoot=false
+  runAsGroup: 1001
+  allowPrivilegeEscalation: true
+  # readOnlyRootFilesystem: false  # Agent needs to write to /var/lib/prysm-agent
+
+extraEnv: []
+extraEnvFrom: []
+
+resources:
+  # Recommended resource limits for production.
+  # Agent runs log-proxy, scanner, k8s-watcher, honeypot-controller, CNI/ebpf reconcilers;
+  # 256Mi was too low and caused OOMKilled (exit 137). Use at least 512Mi limit.
+  # Distroless image uses ~20% less memory than alpine.
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  # For distroless in production with fewer features, consider:
+  # requests:
+  #   cpu: 100m
+  #   memory: 64Mi
+  # limits:
+  #   cpu: 500m
+  #   memory: 384Mi
+
+nodeSelector:
+  kubernetes.io/os: linux
+tolerations:
+  - operator: Exists
+    effect: NoSchedule
+  - operator: Exists
+    effect: NoExecute
+affinity: {}
+
+volumes:
+  wireguardConfig:
+    enabled: true
+    hostPath: /etc/wireguard
+    type: DirectoryOrCreate
+    mountPath: /etc/wireguard
+    readOnly: false
+  modules:
+    enabled: true
+    hostPath: /lib/modules
+    type: Directory
+    mountPath: /lib/modules
+    readOnly: true
+  # kubeconfig: disabled by default — the agent uses in-cluster ServiceAccount
+  # config automatically. Only enable for out-of-cluster or custom kubeconfig setups.
+  kubeconfig:
+    enabled: false
+    hostPath: /etc/rancher/k3s/k3s.yaml
+    type: File
+    mountPath: /etc/rancher/k3s/k3s.yaml
+    readOnly: true
+  stateDir:
+    enabled: true
+    hostPath: /var/lib/prysm-agent
+    type: DirectoryOrCreate
+    mountPath: /var/lib/prysm-agent
+    readOnly: false
+  tmp:
+    enabled: true
+    type: EmptyDir
+    mountPath: /tmp
+    readOnly: false
+    emptyDir: {}
+  # Tunnel daemon watches /var/run/prysm/tunnel-pods for pod netns paths (CNI writes them).
+  # Required for TPROXY: listener must be in each pod's netns.
+  tunnelPods:
+    enabled: true
+    hostPath: /var/run/prysm
+    type: DirectoryOrCreate
+    mountPath: /var/run/prysm
+    readOnly: false
+  # Network namespaces directory - required for tunnel daemon to enter pod netns.
+  # Must use Bidirectional mount propagation so bind mounts from CNI are visible.
+  netns:
+    enabled: true
+    hostPath: /var/run/netns
+    type: DirectoryOrCreate
+    mountPath: /var/run/netns
+    readOnly: false
+    mountPropagation: Bidirectional
+extraVolumes: []
+extraVolumeMounts: []
+
+service:
+  enabled: true
+  type: ClusterIP
+  annotations: {}
+  ports:
+    wireguard:
+      port: 51820
+      targetPort: 51820
+      protocol: UDP
+      nodePort: null
+    http:
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
+      nodePort: null
+
+terminationGracePeriodSeconds: 30
+
+# eBPF Collector image — the agent reconciler manages the DaemonSet at runtime.
+# These values are passed as env vars so the agent knows which image to deploy.
+ebpfCollector:
+  image:
+    repository: ghcr.io/prysmsh/ebpf-collector
+    tag: latest
+  # Optional: name of a Secret in prysm-system for pulling the eBPF image (e.g. ghcr.io registry secret).
+  # Create with: kubectl create secret docker-registry <name> -n prysm-system --docker-server=ghcr.io ...
+  imagePullSecret: ""
+
+# ztunnel / Ambient Mesh Configuration
+# Provides zero-trust mTLS for pod-to-pod traffic without sidecars
+ztunnel:
+  # Enable ztunnel deployment and management (requires istiod - disable if using custom CA)
+  enabled: false
+  
+  # ztunnel DaemonSet image
+  image:
+    repository: docker.io/istio/ztunnel
+    tag: "1.28.3"
+    pullPolicy: IfNotPresent
+  
+  # Istio CNI image (required for traffic interception)
+  cniImage:
+    repository: docker.io/istio/install-cni
+    tag: "1.28.3"
+    pullPolicy: IfNotPresent
+  
+  # Log level for ztunnel (debug, info, warn, error)
+  logLevel: info
+  
+  # Enable Prometheus metrics endpoint
+  enableMetrics: true
+  
+  # Enable access logging for connections
+  enableAccessLog: false
+  
+  # Namespaces to enroll in the mesh (comma-separated, empty = all non-excluded)
+  namespaces: ""
+  
+  # Namespaces to exclude from the mesh (comma-separated)
+  excludeNamespaces: "kube-system,kube-public,istio-system,prysm-system"
+  
+  # Reconciliation interval for ztunnel deployment
+  reconcileInterval: "5m"
+  
+  # ztunnel DaemonSet resources
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  
+  # CNI DaemonSet resources
+  cniResources:
+    requests:
+      cpu: 100m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+# mTLS Agent Authentication Configuration
+# Enables mutual TLS authentication between agent and control plane
+mtls:
+  # Enable mTLS for control plane communication
+  enabled: false
+  
+  # Bootstrap token for initial certificate exchange (one-time use)
+  # Generate via: prysm admin mtls bootstrap-token --cluster-id <id>
+  bootstrapToken: ""
+  
+  # Path to store mTLS certificates
+  certPath: "/var/lib/prysm/mtls"
+  
+  # Skip TLS verification (development only)
+  skipVerify: false
+
+# Workload Certificate Provider Configuration
+# Provides SPIFFE certificates to ztunnel for workload identity
+workloadCertProvider:
+  # Enable the workload certificate provider
+  enabled: false
+
+  # Unix socket path for certificate requests
+  socketPath: "/var/run/secrets/workload-spiffe-uds/socket"
+
+# Tunnel Daemon Configuration
+# Transparent mTLS proxy for zero-trust pod-to-pod encryption.
+# Works with prysm-cni: traffic redirected to port 15001 is wrapped in mTLS
+# using per-pod workload identity certificates issued by the control plane.
+#
+# Architecture:
+#   Pod A → iptables REDIRECT:15001 → Tunnel Daemon → mTLS → Tunnel Daemon → Pod B
+#
+# Each pod gets a unique SPIFFE identity:
+#   spiffe://prysm.sh/org-{id}/cluster-{id}/ns-{ns}/pod-{name}
+tunnelDaemon:
+  # Enable the tunnel daemon for zero-trust pod-to-pod mTLS
+  enabled: true
+
+  # Port for iptables REDIRECT traffic (outbound interception)
+  outboundPort: 15001
+
+  # Port for inbound mTLS connections from other tunnel daemons
+  inboundPort: 15002
+
+  # TTL for cached workload certificates
+  certTTL: "24h"
+
+  # IO buffer size for proxying
+  bufferSize: 32768
+
+  # Deep Packet Inspection (DPI) Configuration
+  # Analyzes traffic in-flight for threats like SQL injection, XSS, command injection
+  dpi:
+    # Enable packet inspection
+    enabled: true
+
+    # Mode: "detect" (log only) or "block" (block critical/high threats)
+    mode: "detect"
+
+    # Maximum body size to inspect (bytes)
+    maxBodySize: 16777216  # 16MB
+
+    # Response actions per threat level
+    # Options: "block", "alert", "log"
+    onCritical: "block"
+    onHigh: "alert"
+    onMedium: "log"
+
+    # HTTP inspection settings
+    http:
+      enabled: true
+      scanBody: true
+      maxBodySize: 16777216  # 16MB
+
+    # DNS inspection settings
+    dns:
+      enabled: true
+      detectDGA: true  # Detect Domain Generation Algorithms

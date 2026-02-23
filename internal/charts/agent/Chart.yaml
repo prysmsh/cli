@@ -1,0 +1,26 @@
+apiVersion: v2
+name: agent
+description: Deploys the Prysm agent that brokers infrastructure access sessions.
+type: application
+version: 0.1.1
+appVersion: "latest"
+home: https://prysm.sh
+sources:
+  - https://github.com/prysmsh
+keywords:
+  - prysm
+  - access
+  - security
+  - wireguard
+  - zero-trust
+maintainers:
+  - name: Prysm Team
+    email: support@prysm.sh
+annotations:
+  # Security updates in 0.1.1
+  # - Updated base image to Alpine 3.21
+  # - Added distroless image variant
+  # - Fixed CVE-2025-22868 (oauth2)
+  # - Updated all golang.org/x/* dependencies
+  category: Security
+  licenses: Apache-2.0

@@ -3,7 +3,7 @@ package plugin
 import (
 	"context"
 
-	pluginv1 "github.com/warp-run/prysm-cli/proto/plugin/v1"
+	pluginv1 "github.com/prysmsh/cli/proto/plugin/v1"
 )
 
 // GRPCPluginClient implements the Plugin interface by calling an external plugin over gRPC.

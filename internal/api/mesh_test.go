@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/warp-run/prysm-cli/internal/api"
+	"github.com/prysmsh/cli/internal/api"
 )
 
 func TestRegisterMeshNode_Error(t *testing.T) {

@@ -7,10 +7,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
-	"github.com/warp-run/prysm-cli/internal/util"
+	"github.com/prysmsh/cli/internal/style"
+	"github.com/prysmsh/cli/internal/util"
 )
 
 func newHoneypotsCommand() *cobra.Command {
@@ -65,25 +65,24 @@ func newHoneypotsStatusCommand() *cobra.Command {
 				return nil
 			}
 
-			bold := color.New(color.Bold)
-			bold.Println("Honeypot Deployments")
+			fmt.Println(style.Bold.Render("Honeypot Deployments"))
 			fmt.Println(strings.Repeat("-", 90))
-			bold.Printf("%-4s %-25s %-10s %-10s %-12s %-25s\n", "ID", "CLUSTER", "ENABLED", "STATUS", "PROFILE", "HONEYPOTS")
+			fmt.Print(style.Bold.Render(fmt.Sprintf("%-4s %-25s %-10s %-10s %-12s %-25s\n", "ID", "CLUSTER", "ENABLED", "STATUS", "PROFILE", "HONEYPOTS")))
 			fmt.Println(strings.Repeat("-", 90))
 
 			for _, c := range data.Configs {
 				enabledStr := "No"
-				enabledColor := color.FgRed
+				enabledStyle := style.Error
 				if c.Enabled {
 					enabledStr = "Yes"
-					enabledColor = color.FgGreen
+					enabledStyle = style.Success
 				}
 
-				statusColor := color.FgYellow
+				statusStyle := style.Warning
 				if c.Status == "active" {
-					statusColor = color.FgGreen
+					statusStyle = style.Success
 				} else if c.Status == "error" {
-					statusColor = color.FgRed
+					statusStyle = style.Error
 				}
 
 				honeypots := "-"
@@ -95,8 +94,8 @@ func newHoneypotsStatusCommand() *cobra.Command {
 				}
 
 				fmt.Printf("%-4s %-25s ", c.ClusterID, truncate(c.ClusterName, 25))
-				color.New(enabledColor).Printf("%-10s ", enabledStr)
-				color.New(statusColor).Printf("%-10s ", c.Status)
+				fmt.Print(enabledStyle.Render(fmt.Sprintf("%-10s ", enabledStr)))
+				fmt.Print(statusStyle.Render(fmt.Sprintf("%-10s ", c.Status)))
 				fmt.Printf("%-12s %-25s\n", c.Profile, honeypots)
 			}
 
@@ -170,21 +169,22 @@ func newHoneypotsEventsCommand() *cobra.Command {
 				return nil
 			}
 
-			bold := color.New(color.Bold)
-			bold.Printf("Honeypot Events (%d total, showing %d)\n", data.Total, len(data.Events))
+			fmt.Print(style.Bold.Render(fmt.Sprintf("Honeypot Events (%d total, showing %d)\n", data.Total, len(data.Events))))
 			fmt.Println(strings.Repeat("-", 100))
-			bold.Printf("%-20s %-8s %-16s %-15s %-12s %-20s\n", "TIMESTAMP", "SEVERITY", "SOURCE IP", "HONEYPOT", "EVENT", "DETAILS")
+			fmt.Print(style.Bold.Render(fmt.Sprintf("%-20s %-8s %-16s %-15s %-12s %-20s\n", "TIMESTAMP", "SEVERITY", "SOURCE IP", "HONEYPOT", "EVENT", "DETAILS")))
 			fmt.Println(strings.Repeat("-", 100))
 
 			for _, e := range data.Events {
-				sevColor := color.FgWhite
+				var sevStyle style.Style
 				switch strings.ToLower(e.Severity) {
 				case "critical":
-					sevColor = color.FgRed
+					sevStyle = style.Error
 				case "high":
-					sevColor = color.FgYellow
+					sevStyle = style.Warning
 				case "medium":
-					sevColor = color.FgCyan
+					sevStyle = style.Info
+				default:
+					sevStyle = style.Bold
 				}
 
 				details := ""
@@ -200,7 +200,7 @@ func newHoneypotsEventsCommand() *cobra.Command {
 				}
 
 				fmt.Printf("%-20s ", ts)
-				color.New(sevColor).Printf("%-8s ", e.Severity)
+				fmt.Print(sevStyle.Render(fmt.Sprintf("%-8s ", e.Severity)))
 				fmt.Printf("%-16s %-15s %-12s %-20s\n",
 					e.SourceIP,
 					truncate(e.HoneypotType, 15),
@@ -258,7 +258,7 @@ func newHoneypotsDeployCommand() *cobra.Command {
 				return fmt.Errorf("deploy honeypots: %s", resp.Status)
 			}
 
-			color.Green("✓ Honeypots deployment initiated for cluster %s\n", clusterID)
+			fmt.Println(style.Success.Render(fmt.Sprintf("✓ Honeypots deployment initiated for cluster %s", clusterID)))
 			fmt.Printf("  Profile: %s\n", result.Config.Profile)
 			fmt.Printf("  Status:  %s\n", result.Config.Status)
 			fmt.Println()
@@ -300,7 +300,7 @@ func newHoneypotsDisableCommand() *cobra.Command {
 				return fmt.Errorf("disable honeypots: %s", resp.Status)
 			}
 
-			color.Yellow("Honeypots disabled for cluster %s\n", clusterID)
+			fmt.Println(style.Warning.Render(fmt.Sprintf("Honeypots disabled for cluster %s", clusterID)))
 			fmt.Println("The agent will remove honeypot deployments on the next reconciliation cycle.")
 
 			return nil
@@ -334,12 +334,11 @@ func newHoneypotsTypesCommand() *cobra.Command {
 				return fmt.Errorf("get honeypot types: %s", resp.Status)
 			}
 
-			bold := color.New(color.Bold)
-			bold.Println("Available Honeypot Types")
+			fmt.Println(style.Bold.Render("Available Honeypot Types"))
 			fmt.Println(strings.Repeat("-", 70))
 
 			for _, t := range data.Types {
-				bold.Printf("%s\n", t.Name)
+				fmt.Print(style.Bold.Render(t.Name + "\n"))
 				fmt.Printf("  %s\n", t.Description)
 				if len(t.Ports) > 0 {
 					ports := make([]string, len(t.Ports))
@@ -352,7 +351,7 @@ func newHoneypotsTypesCommand() *cobra.Command {
 			}
 
 			if len(data.Profiles) > 0 {
-				bold.Println("Deployment Profiles")
+				fmt.Println(style.Bold.Render("Deployment Profiles"))
 				fmt.Println(strings.Repeat("-", 70))
 				for name, types := range data.Profiles {
 					fmt.Printf("%-12s %s\n", name+":", strings.Join(types, ", "))

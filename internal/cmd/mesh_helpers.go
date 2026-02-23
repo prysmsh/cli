@@ -6,7 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/warp-run/prysm-cli/internal/api"
+	"github.com/prysmsh/cli/internal/api"
+	"github.com/prysmsh/cli/internal/ui"
 )
 
 // meshPeerRow represents a single row in the mesh peers table (mesh node or cluster).
@@ -49,14 +50,10 @@ func renderMeshPeerRows(rows []meshPeerRow) {
 		return strings.Compare(rows[i].DeviceID, rows[j].DeviceID) < 0
 	})
 
-	fmt.Printf("%-24s %-10s %-12s %-19s %-8s\n", "DEVICE", "TYPE", "STATUS", "LAST PING", "EXIT")
-	for _, row := range rows {
-		fmt.Printf("%-24s %-10s %-12s %-19s %-8s\n",
-			truncate(row.DeviceID, 24),
-			row.PeerType,
-			row.Status,
-			row.LastPing,
-			row.Exit,
-		)
+	headers := []string{"DEVICE", "TYPE", "STATUS", "LAST PING", "EXIT"}
+	data := make([][]string, len(rows))
+	for i, row := range rows {
+		data[i] = []string{row.DeviceID, row.PeerType, row.Status, row.LastPing, row.Exit}
 	}
+	ui.PrintTable(headers, data)
 }

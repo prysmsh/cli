@@ -7,10 +7,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
-	"github.com/warp-run/prysm-cli/internal/util"
+	"github.com/prysmsh/cli/internal/style"
+	"github.com/prysmsh/cli/internal/util"
 )
 
 func newSecurityCommand() *cobra.Command {
@@ -66,39 +66,38 @@ func newSecuritySummaryCommand() *cobra.Command {
 				return fmt.Errorf("get security summary: %s", resp.Status)
 			}
 
-			bold := color.New(color.Bold)
-			bold.Println("Security Summary (Unique CVEs)")
+			fmt.Println(style.Bold.Render("Security Summary (Unique CVEs)"))
 			fmt.Println(strings.Repeat("-", 40))
 
 			// Critical
 			fmt.Printf("Critical:  ")
 			if data.Critical > 0 {
-				color.New(color.FgRed, color.Bold).Printf("%d\n", data.Critical)
+				fmt.Println(style.Error.Render(fmt.Sprintf("%d", data.Critical)))
 			} else {
-				color.Green("0\n")
+				fmt.Println(style.Success.Render("0"))
 			}
 
 			// High
 			fmt.Printf("High:      ")
 			if data.High > 0 {
-				color.New(color.FgYellow).Printf("%d\n", data.High)
+				fmt.Println(style.Warning.Render(fmt.Sprintf("%d", data.High)))
 			} else {
-				color.Green("0\n")
+				fmt.Println(style.Success.Render("0"))
 			}
 
 			// Medium
 			fmt.Printf("Medium:    ")
 			if data.Medium > 0 {
-				color.New(color.FgCyan).Printf("%d\n", data.Medium)
+				fmt.Println(style.Info.Render(fmt.Sprintf("%d", data.Medium)))
 			} else {
-				color.Green("0\n")
+				fmt.Println(style.Success.Render("0"))
 			}
 
 			// Low
 			fmt.Printf("Low:       %d\n", data.Low)
 
 			fmt.Println(strings.Repeat("-", 40))
-			bold.Printf("Total:     %d unique CVEs\n", data.Total)
+			fmt.Print(style.Bold.Render(fmt.Sprintf("Total:     %d unique CVEs\n", data.Total)))
 			fmt.Printf("Instances: %d affected containers\n", data.AffectedInstances)
 
 			return nil
@@ -188,29 +187,30 @@ func newVulnsListCommand() *cobra.Command {
 			}
 
 			if len(data.Vulnerabilities) == 0 {
-				color.Green("No vulnerabilities found.\n")
+				fmt.Println(style.Success.Render("No vulnerabilities found."))
 				return nil
 			}
 
-			bold := color.New(color.Bold)
-			bold.Printf("Vulnerabilities (%d total, showing %d)\n", data.Total, len(data.Vulnerabilities))
+			fmt.Print(style.Bold.Render(fmt.Sprintf("Vulnerabilities (%d total, showing %d)\n", data.Total, len(data.Vulnerabilities))))
 			fmt.Println(strings.Repeat("-", 100))
-			bold.Printf("%-18s %-10s %-5s %-25s %-20s %-15s\n", "CVE", "SEVERITY", "CVSS", "PACKAGE", "NAMESPACE", "FIXED")
+			fmt.Print(style.Bold.Render(fmt.Sprintf("%-18s %-10s %-5s %-25s %-20s %-15s\n", "CVE", "SEVERITY", "CVSS", "PACKAGE", "NAMESPACE", "FIXED")))
 			fmt.Println(strings.Repeat("-", 100))
 
 			for _, v := range data.Vulnerabilities {
-				sevColor := color.FgWhite
+				var sevStyle style.Style
 				switch strings.ToUpper(v.Severity) {
 				case "CRITICAL":
-					sevColor = color.FgRed
+					sevStyle = style.Error
 				case "HIGH":
-					sevColor = color.FgYellow
+					sevStyle = style.Warning
 				case "MEDIUM":
-					sevColor = color.FgCyan
+					sevStyle = style.Info
+				default:
+					sevStyle = style.Bold
 				}
 
 				fmt.Printf("%-18s ", truncate(v.VulnerabilityID, 18))
-				color.New(sevColor).Printf("%-10s ", v.Severity)
+				fmt.Print(sevStyle.Render(fmt.Sprintf("%-10s ", v.Severity)))
 				fmt.Printf("%-5.1f %-25s %-20s %-15s\n",
 					v.CVSSv3Score,
 					truncate(v.PackageName, 25),
@@ -271,18 +271,17 @@ func newVulnsGetCommand() *cobra.Command {
 				return fmt.Errorf("get vulnerability: %s", resp.Status)
 			}
 
-			bold := color.New(color.Bold)
-			bold.Printf("%s\n", data.VulnerabilityID)
+			fmt.Print(style.Bold.Render(data.VulnerabilityID + "\n"))
 			fmt.Println(strings.Repeat("-", 60))
 
 			fmt.Printf("Severity:    ")
 			switch strings.ToUpper(data.Severity) {
 			case "CRITICAL":
-				color.Red("%s\n", data.Severity)
+				fmt.Println(style.Error.Render(data.Severity))
 			case "HIGH":
-				color.Yellow("%s\n", data.Severity)
+				fmt.Println(style.Warning.Render(data.Severity))
 			case "MEDIUM":
-				color.Cyan("%s\n", data.Severity)
+				fmt.Println(style.Info.Render(data.Severity))
 			default:
 				fmt.Printf("%s\n", data.Severity)
 			}
@@ -293,13 +292,13 @@ func newVulnsGetCommand() *cobra.Command {
 			}
 			fmt.Println()
 
-			bold.Println("Affected Package:")
+			fmt.Println(style.Bold.Render("Affected Package:"))
 			fmt.Printf("  Name:      %s\n", data.PackageName)
 			fmt.Printf("  Installed: %s\n", data.InstalledVersion)
 			fmt.Printf("  Fixed:     %s\n", data.FixedVersion)
 			fmt.Println()
 
-			bold.Println("Location:")
+			fmt.Println(style.Bold.Render("Location:"))
 			fmt.Printf("  Namespace: %s\n", data.Namespace)
 			fmt.Printf("  Pod:       %s\n", data.PodName)
 			fmt.Printf("  Container: %s\n", data.ContainerName)
@@ -307,13 +306,13 @@ func newVulnsGetCommand() *cobra.Command {
 			fmt.Println()
 
 			if data.Title != "" {
-				bold.Println("Title:")
+				fmt.Println(style.Bold.Render("Title:"))
 				fmt.Printf("  %s\n", data.Title)
 				fmt.Println()
 			}
 
 			if data.Description != "" {
-				bold.Println("Description:")
+				fmt.Println(style.Bold.Render("Description:"))
 				fmt.Printf("  %s\n", truncate(data.Description, 500))
 				fmt.Println()
 			}
@@ -369,10 +368,9 @@ func newSecurityComplianceCommand() *cobra.Command {
 				return nil
 			}
 
-			bold := color.New(color.Bold)
-			bold.Println("Compliance Trends (Last 30 Days)")
+			fmt.Println(style.Bold.Render("Compliance Trends (Last 30 Days)"))
 			fmt.Println(strings.Repeat("-", 50))
-			bold.Printf("%-12s %-10s %-10s %-10s\n", "DATE", "TOTAL", "CRITICAL", "HIGH")
+			fmt.Print(style.Bold.Render(fmt.Sprintf("%-12s %-10s %-10s %-10s\n", "DATE", "TOTAL", "CRITICAL", "HIGH")))
 			fmt.Println(strings.Repeat("-", 50))
 
 			// Show last 10 days
@@ -383,12 +381,12 @@ func newSecurityComplianceCommand() *cobra.Command {
 			for _, t := range data.Trends[start:] {
 				fmt.Printf("%-12s %-10d ", t.Date, t.Total)
 				if t.Critical > 0 {
-					color.New(color.FgRed).Printf("%-10d ", t.Critical)
+					fmt.Print(style.Error.Render(fmt.Sprintf("%-10d ", t.Critical)))
 				} else {
 					fmt.Printf("%-10d ", t.Critical)
 				}
 				if t.High > 0 {
-					color.New(color.FgYellow).Printf("%-10d\n", t.High)
+					fmt.Println(style.Warning.Render(fmt.Sprintf("%-10d", t.High)))
 				} else {
 					fmt.Printf("%-10d\n", t.High)
 				}

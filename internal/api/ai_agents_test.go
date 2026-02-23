@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/warp-run/prysm-cli/internal/api"
+	"github.com/prysmsh/cli/internal/api"
 )
 
 func TestListAIAgents(t *testing.T) {
@@ -39,6 +39,19 @@ func TestListAIAgents(t *testing.T) {
 	}
 }
 
+func TestListAIAgents_Error(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	client := api.NewClient(srv.URL)
+	_, err := client.ListAIAgents(context.Background())
+	if err == nil {
+		t.Fatal("expected error from ListAIAgents")
+	}
+}
+
 func TestListAIAgentsEmpty(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -53,6 +66,20 @@ func TestListAIAgentsEmpty(t *testing.T) {
 	}
 	if agents == nil || len(agents) != 0 {
 		t.Errorf("agents = %v", agents)
+	}
+}
+
+func TestGetAIAgent_Error(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(`{"error":"not found"}`))
+	}))
+	defer srv.Close()
+
+	client := api.NewClient(srv.URL)
+	_, err := client.GetAIAgent(context.Background(), 999)
+	if err == nil {
+		t.Fatal("expected error from GetAIAgent")
 	}
 }
 
@@ -75,6 +102,22 @@ func TestGetAIAgent(t *testing.T) {
 	}
 	if agent.ID != 42 || agent.Name != "my-agent" {
 		t.Errorf("agent = %+v", agent)
+	}
+}
+
+func TestCreateAIAgent_Error(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"error":"invalid request"}`))
+	}))
+	defer srv.Close()
+
+	client := api.NewClient(srv.URL)
+	_, err := client.CreateAIAgent(context.Background(), api.AIAgentCreateRequest{
+		Name: "x", Type: "assistant", Runtime: "openai",
+	})
+	if err == nil {
+		t.Fatal("expected error from CreateAIAgent")
 	}
 }
 
@@ -153,6 +196,38 @@ func TestDeleteAIAgent(t *testing.T) {
 	err := client.DeleteAIAgent(context.Background(), 1)
 	if err != nil {
 		t.Fatalf("DeleteAIAgent: %v", err)
+	}
+}
+
+func TestGetAIAgentLogs_Error(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(`{"error":"agent not found"}`))
+	}))
+	defer srv.Close()
+
+	client := api.NewClient(srv.URL)
+	client.SetToken("token")
+	_, err := client.GetAIAgentLogs(context.Background(), 999, 10)
+	if err == nil {
+		t.Fatal("expected error from GetAIAgentLogs")
+	}
+}
+
+func TestGetAIAgentLogs_EmptyLogs(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{"logs": []interface{}{}, "total": 0})
+	}))
+	defer srv.Close()
+
+	client := api.NewClient(srv.URL)
+	logs, err := client.GetAIAgentLogs(context.Background(), 1, 10)
+	if err != nil {
+		t.Fatalf("GetAIAgentLogs: %v", err)
+	}
+	if len(logs) != 0 {
+		t.Errorf("len(logs) = %d, want 0", len(logs))
 	}
 }
 

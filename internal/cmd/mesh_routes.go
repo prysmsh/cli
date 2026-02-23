@@ -8,10 +8,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
-	"github.com/warp-run/prysm-cli/internal/api"
+	"github.com/prysmsh/cli/internal/api"
+	"github.com/prysmsh/cli/internal/style"
+	"github.com/prysmsh/cli/internal/ui"
 )
 
 func newMeshRoutesCommand() *cobra.Command {
@@ -55,37 +56,35 @@ func newMeshRoutesListCommand() *cobra.Command {
 			}
 
 			if len(routes) == 0 {
-				color.New(color.FgYellow).Println("No mesh routes defined yet.")
+				fmt.Println(style.Warning.Render("No mesh routes defined yet."))
 				return nil
 			}
 
-			fmt.Printf("%-6s %-16s %-12s %-10s %-14s %-19s\n", "ID", "CLUSTER", "SERVICE", "TARGET", "STATUS", "UPDATED")
+			headers := []string{"ID", "CLUSTER", "SERVICE", "TARGET", "STATUS", "UPDATED"}
+			rows := make([][]string, 0, len(routes))
 			for _, route := range routes {
 				clusterName := fmt.Sprintf("%d", route.ClusterID)
 				if route.Cluster != nil && strings.TrimSpace(route.Cluster.Name) != "" {
 					clusterName = route.Cluster.Name
 				}
-
 				service := route.ServiceName
 				if route.ServicePort > 0 {
 					service = fmt.Sprintf("%s:%d", service, route.ServicePort)
 				}
-
 				target := fmt.Sprintf(":%d", route.ExternalPort)
 				if route.ExternalURL != "" {
 					target = route.ExternalURL
 				}
-
-				updated := route.UpdatedAt.Format(time.RFC3339)
-				fmt.Printf("%-6d %-16s %-12s %-10s %-14s %-19s\n",
-					route.ID,
+				rows = append(rows, []string{
+					fmt.Sprintf("%d", route.ID),
 					clusterName,
 					service,
 					target,
 					route.Status,
-					updated,
-				)
+					route.UpdatedAt.Format(time.RFC3339),
+				})
 			}
+			ui.PrintTable(headers, rows)
 			return nil
 		},
 	}
@@ -160,14 +159,14 @@ func newMeshRoutesCreateCommand() *cobra.Command {
 				return err
 			}
 
-			color.New(color.FgGreen).Printf("🛣️  Route %d created targeting %s\n", route.ID, cluster.Name)
+			fmt.Println(style.Success.Render(fmt.Sprintf("🛣️  Route %d created targeting %s", route.ID, cluster.Name)))
 			fmt.Printf("Local clients can reach %s via %s (%s).\n",
 				serviceEndpointLabel(route.ServiceName, route.ServicePort),
 				displayRouteEndpoint(route.ExternalURL, route.ExternalPort),
 				route.Protocol,
 			)
 			if route.Description != "" {
-				color.New(color.FgHiBlack).Printf("Notes: %s\n", route.Description)
+				fmt.Println(style.MutedStyle.Render(fmt.Sprintf("Notes: %s", route.Description)))
 			}
 			return nil
 		},
@@ -208,7 +207,7 @@ func newMeshRoutesDeleteCommand() *cobra.Command {
 				return err
 			}
 
-			color.New(color.FgGreen).Printf("🗑️  Route %d deleted\n", routeID)
+			fmt.Println(style.Success.Render(fmt.Sprintf("🗑️  Route %d deleted", routeID)))
 			return nil
 		},
 	}
@@ -232,9 +231,9 @@ func resolveCluster(ctx context.Context, app *App, ref string) (*api.Cluster, er
 		for _, c := range clusters {
 			status := c.Status
 			if strings.ToLower(status) == "connected" {
-				status = color.HiGreenString(status)
+				status = style.Success.Render(status)
 			} else {
-				status = color.HiRedString(status)
+				status = style.Error.Render(status)
 			}
 			fmt.Fprintf(&b, "  - %d\t%s\t%s\n", c.ID, c.Name, status)
 		}
@@ -242,7 +241,7 @@ func resolveCluster(ctx context.Context, app *App, ref string) (*api.Cluster, er
 	}
 
 	if !cluster.IsExitRouter {
-		color.New(color.FgYellow).Printf("Warning: cluster %s is not currently marked as an exit router.\n", cluster.Name)
+		fmt.Println(style.Warning.Render(fmt.Sprintf("Warning: cluster %s is not currently marked as an exit router.", cluster.Name)))
 	}
 
 	return cluster, nil
