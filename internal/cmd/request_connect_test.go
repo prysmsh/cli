@@ -1,15 +1,10 @@
 package cmd
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"strings"
 	"testing"
-
-	"github.com/prysmsh/cli/internal/plugin"
-	onboardplugin "github.com/prysmsh/cli/plugins/onboard"
 )
 
 func TestRequestCreateRequiresReason(t *testing.T) {
@@ -149,39 +144,119 @@ func TestSSHCommandDryRun(t *testing.T) {
 	}
 }
 
-type sshOnboardHostStub struct{}
-
-func (s *sshOnboardHostStub) GetAuthContext(context.Context) (*plugin.AuthContext, error) {
-	return nil, errors.New("stub auth error")
-}
-func (s *sshOnboardHostStub) APIRequest(context.Context, string, string, []byte) (int, []byte, error) {
-	return 0, nil, errors.New("unexpected API request")
-}
-func (s *sshOnboardHostStub) GetConfig(context.Context) (*plugin.HostConfig, error) {
-	return nil, errors.New("unexpected GetConfig")
-}
-func (s *sshOnboardHostStub) Log(context.Context, plugin.LogLevel, string) error { return nil }
-func (s *sshOnboardHostStub) PromptInput(context.Context, string, bool) (string, error) {
-	return "", errors.New("unexpected PromptInput")
-}
-func (s *sshOnboardHostStub) PromptConfirm(context.Context, string) (bool, error) {
-	return false, errors.New("unexpected PromptConfirm")
-}
-
-func TestSSHOnboardDispatchesToOnboardPlugin(t *testing.T) {
-	prev := onboardPlugin
-	onboardPlugin = onboardplugin.New(&sshOnboardHostStub{})
-	t.Cleanup(func() { onboardPlugin = prev })
-
+func TestSSHOnboardRequiresTarget(t *testing.T) {
 	cmd := newSSHCommand()
 	_, _, err := executeCommand(cmd, "onboard")
 	if err == nil {
-		t.Fatalf("expected onboarding command to return stub error")
+		t.Fatalf("expected onboarding command to fail without target")
 	}
-	if !strings.Contains(err.Error(), "stub auth error") {
-		t.Fatalf("expected onboard plugin error, got: %v", err)
+	if !strings.Contains(err.Error(), "accepts 1 arg(s), received 0") {
+		t.Fatalf("expected missing target arg error, got: %v", err)
 	}
+
 	if strings.Contains(err.Error(), "required flag(s) \"reason\"") {
 		t.Fatalf("ssh onboard should not be treated as ssh target, got: %v", err)
+	}
+}
+
+func TestSSHOnboardDryRunCommand(t *testing.T) {
+	cmd := newSSHCommand()
+	stdout, _, err := executeCommand(cmd, "onboard", "root@example-host", "--dry-run")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(stdout, "ssh -t root@example-host prysm") {
+		t.Fatalf("expected dry-run ssh command prefix, got:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "onboard docker") {
+		t.Fatalf("expected onboard docker command, got:\n%s", stdout)
+	}
+}
+
+func TestSSHOnboardDryRunCommandWithCollector(t *testing.T) {
+	cmd := newSSHCommand()
+	stdout, _, err := executeCommand(cmd, "onboard", "root@example-host", "--collector", "--dry-run")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(stdout, "ssh -t root@example-host prysm") {
+		t.Fatalf("expected dry-run ssh command prefix, got:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "onboard docker --collector") {
+		t.Fatalf("expected collector dry-run ssh command, got:\n%s", stdout)
+	}
+}
+
+func TestSSHTargetHost(t *testing.T) {
+	tests := []struct {
+		name   string
+		target string
+		want   string
+	}{
+		{name: "user and ipv4", target: "alessio@192.168.190.175", want: "192.168.190.175"},
+		{name: "host and port", target: "example.com:2222", want: "example.com"},
+		{name: "ipv6 with port", target: "root@[2001:db8::1]:2222", want: "2001:db8::1"},
+		{name: "plain host", target: "db.internal", want: "db.internal"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sshTargetHost(tt.target)
+			if got != tt.want {
+				t.Fatalf("sshTargetHost(%q) = %q, want %q", tt.target, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsHostKeyVerificationFailure(t *testing.T) {
+	if !isHostKeyVerificationFailure("Host key verification failed.\n") {
+		t.Fatal("expected host key verification error to be detected")
+	}
+	if isHostKeyVerificationFailure("permission denied (publickey)\n") {
+		t.Fatal("expected non-host-key errors to be ignored")
+	}
+}
+
+func TestIsRemotePrysmNotFound(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{name: "zsh form", input: "zsh:1: command not found: prysm", want: true},
+		{name: "bash form", input: "bash: prysm: command not found", want: true},
+		{name: "other error", input: "permission denied (publickey)", want: false},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isRemotePrysmNotFound(tt.input)
+			if got != tt.want {
+				t.Fatalf("isRemotePrysmNotFound(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSSHOnboardRemoteArgs(t *testing.T) {
+	got := sshOnboardRemoteArgs("prysm", true, "tok_123")
+	want := []string{"prysm", "--token", "tok_123", "onboard", "docker", "--collector"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("sshOnboardRemoteArgs() = %v, want %v", got, want)
+	}
+
+	gotNoToken := sshOnboardRemoteArgs("prysm", false, "")
+	wantNoToken := []string{"prysm", "onboard", "docker"}
+	if strings.Join(gotNoToken, " ") != strings.Join(wantNoToken, " ") {
+		t.Fatalf("sshOnboardRemoteArgs() without token = %v, want %v", gotNoToken, wantNoToken)
+	}
+}
+
+func TestRedactSSHOnboardToken(t *testing.T) {
+	in := []string{"-t", "host", "prysm", "--token", "secret", "onboard", "docker"}
+	got := redactSSHOnboardToken(in)
+	if strings.Join(got, " ") != "-t host prysm --token <redacted> onboard docker" {
+		t.Fatalf("redactSSHOnboardToken() = %v", got)
 	}
 }

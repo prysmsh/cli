@@ -1,10 +1,13 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,7 +20,6 @@ import (
 
 	"github.com/prysmsh/cli/internal/api"
 	"github.com/prysmsh/cli/internal/output"
-	"github.com/prysmsh/cli/internal/plugin"
 	"github.com/prysmsh/cli/internal/style"
 	"github.com/prysmsh/cli/internal/ui"
 	"github.com/prysmsh/cli/internal/util"
@@ -54,56 +56,226 @@ func newSSHCommand() *cobra.Command {
 
 func newSSHOnboardCommand() *cobra.Command {
 	var withCollector bool
+	var dryRun bool
 
 	cmd := &cobra.Command{
-		Use:   "onboard",
+		Use:   "onboard <target>",
 		Short: "Onboard an SSH-accessible host",
-		Long:  "Bootstrap a host for SSH access by running the Docker-host onboarding flow. This is equivalent to `prysm onboard docker`.",
-		Args:  cobra.NoArgs,
+		Long:  "SSH to the target host and run Docker-host onboarding remotely (runs `prysm onboard docker` on the target).",
+		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if onboardPlugin == nil {
-				return fmt.Errorf("onboard plugin is not initialized")
+			target := strings.TrimSpace(args[0])
+			if target == "" {
+				return fmt.Errorf("target host is required")
 			}
 
-			subcommand := "docker"
-			if withCollector {
-				// Reuse the hidden docker-compose mode to force collector enablement.
-				subcommand = "docker-compose"
+			localToken := strings.TrimSpace(currentSessionToken())
+			remoteArgs := sshOnboardRemoteArgs("prysm", withCollector, localToken)
+
+			sshArgs := []string{"-t", target}
+			sshArgs = append(sshArgs, remoteArgs...)
+
+			if dryRun {
+				// Keep dry-run output secret-free even when token forwarding is enabled.
+				displayArgs := []string{"-t", target}
+				displayArgs = append(displayArgs, sshOnboardRemoteArgs("prysm", withCollector, "redacted")...)
+				displayArgs = redactSSHOnboardToken(displayArgs)
+				fmt.Printf("ssh %s\n", strings.Join(displayArgs, " "))
+				return nil
 			}
 
-			wd, _ := os.Getwd()
-			req := plugin.ExecuteRequest{
-				Args:       []string{subcommand},
-				WorkingDir: wd,
-			}
+			stderrOutput, err := runSSHCommand(cmd.Context(), sshArgs)
+			if err != nil {
+				if isHostKeyVerificationFailure(stderrOutput) {
+					host := sshTargetHost(target)
+					confirm, promptErr := util.PromptConfirm(
+						fmt.Sprintf("Host key for %s is unknown. Add it to ~/.ssh/known_hosts and continue?", host),
+						true,
+					)
+					if promptErr != nil {
+						return fmt.Errorf("confirm host key trust: %w", promptErr)
+					}
+					if !confirm {
+						return fmt.Errorf("remote onboarding aborted: host key for %s not trusted", host)
+					}
+					if addErr := addHostKeyToKnownHosts(cmd.Context(), target); addErr != nil {
+						return fmt.Errorf("add host key for %s: %w", host, addErr)
+					}
 
-			if app != nil {
-				if opts := pluginRequestOptions(); opts != nil {
-					ext := opts()
-					req.OutputFormat = ext.OutputFormat
-					req.Debug = ext.Debug
-					if len(ext.Env) > 0 {
-						req.Env = ext.Env
+					stderrOutput, err = runSSHCommand(cmd.Context(), sshArgs)
+					if err == nil {
+						return nil
 					}
 				}
-			}
+				if isRemotePrysmNotFound(stderrOutput) {
+					confirm, promptErr := util.PromptConfirm(
+						"Remote `prysm` CLI not found. Install it to ~/.local/bin/prysm and continue?",
+						true,
+					)
+					if promptErr != nil {
+						return fmt.Errorf("confirm remote CLI install: %w", promptErr)
+					}
+					if !confirm {
+						return fmt.Errorf("remote onboarding aborted: remote `prysm` CLI is missing")
+					}
+					if installErr := installRemotePrysmBinary(cmd.Context(), target); installErr != nil {
+						return fmt.Errorf("install remote `prysm` CLI: %w", installErr)
+					}
 
-			resp := onboardPlugin.Execute(cmd.Context(), req)
-			if resp.Stdout != "" {
-				fmt.Print(resp.Stdout)
-			}
-			if resp.Error != "" {
-				return fmt.Errorf("%s", resp.Error)
-			}
-			if resp.ExitCode != 0 {
-				os.Exit(resp.ExitCode)
+					retryRemoteArgs := sshOnboardRemoteArgs("~/.local/bin/prysm", withCollector, localToken)
+					retrySSHArgs := []string{"-t", target}
+					retrySSHArgs = append(retrySSHArgs, retryRemoteArgs...)
+					_, err = runSSHCommand(cmd.Context(), retrySSHArgs)
+					if err == nil {
+						return nil
+					}
+				}
+				return fmt.Errorf("remote onboarding failed: %w", err)
 			}
 			return nil
 		},
 	}
 
 	cmd.Flags().BoolVar(&withCollector, "collector", false, "include eBPF collector in the generated compose stack")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print the remote ssh onboarding command without executing it")
 	return cmd
+}
+
+func sshOnboardRemoteArgs(remoteBinary string, withCollector bool, token string) []string {
+	remoteArgs := []string{remoteBinary}
+	if strings.TrimSpace(token) != "" {
+		remoteArgs = append(remoteArgs, "--token", token)
+	}
+	remoteArgs = append(remoteArgs, "onboard", "docker")
+	if withCollector {
+		remoteArgs = append(remoteArgs, "--collector")
+	}
+	return remoteArgs
+}
+
+func redactSSHOnboardToken(args []string) []string {
+	out := make([]string, len(args))
+	copy(out, args)
+	for i := 0; i < len(out)-1; i++ {
+		if out[i] == "--token" {
+			out[i+1] = "<redacted>"
+			i++
+		}
+	}
+	return out
+}
+
+func currentSessionToken() string {
+	if app == nil || app.API == nil {
+		return ""
+	}
+	return app.API.Token()
+}
+
+func runSSHCommand(ctx context.Context, sshArgs []string) (string, error) {
+	var combined bytes.Buffer
+	sshCmd := exec.CommandContext(ctx, "ssh", sshArgs...)
+	sshCmd.Stdin = os.Stdin
+	sshCmd.Stdout = io.MultiWriter(os.Stdout, &combined)
+	sshCmd.Stderr = io.MultiWriter(os.Stderr, &combined)
+	err := sshCmd.Run()
+	return combined.String(), err
+}
+
+func isHostKeyVerificationFailure(stderrOutput string) bool {
+	return strings.Contains(stderrOutput, "Host key verification failed.")
+}
+
+func isRemotePrysmNotFound(stderrOutput string) bool {
+	return strings.Contains(stderrOutput, "command not found: prysm") ||
+		strings.Contains(stderrOutput, "prysm: command not found")
+}
+
+func sshTargetHost(target string) string {
+	hostPart := strings.TrimSpace(target)
+	if idx := strings.LastIndex(hostPart, "@"); idx >= 0 {
+		hostPart = hostPart[idx+1:]
+	}
+	if hostPart == "" {
+		return target
+	}
+
+	if strings.HasPrefix(hostPart, "[") {
+		end := strings.Index(hostPart, "]")
+		if end > 1 {
+			return hostPart[1:end]
+		}
+	}
+
+	if host, _, err := net.SplitHostPort(hostPart); err == nil && host != "" {
+		return host
+	}
+	return hostPart
+}
+
+func installRemotePrysmBinary(ctx context.Context, target string) error {
+	execPath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve local executable path: %w", err)
+	}
+	resolvedPath, err := filepath.EvalSymlinks(execPath)
+	if err == nil && strings.TrimSpace(resolvedPath) != "" {
+		execPath = resolvedPath
+	}
+
+	bin, err := os.Open(execPath)
+	if err != nil {
+		return fmt.Errorf("open local executable %q: %w", execPath, err)
+	}
+	defer bin.Close()
+
+	remoteCmd := exec.CommandContext(
+		ctx,
+		"ssh",
+		target,
+		"mkdir -p ~/.local/bin && cat > ~/.local/bin/prysm && chmod 755 ~/.local/bin/prysm",
+	)
+	remoteCmd.Stdin = bin
+	remoteCmd.Stdout = os.Stdout
+	remoteCmd.Stderr = os.Stderr
+	if err := remoteCmd.Run(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func addHostKeyToKnownHosts(ctx context.Context, target string) error {
+	host := sshTargetHost(target)
+	if strings.TrimSpace(host) == "" {
+		return fmt.Errorf("unable to determine SSH host from target %q", target)
+	}
+
+	scanCmd := exec.CommandContext(ctx, "ssh-keyscan", "-H", host)
+	keyOutput, err := scanCmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("ssh-keyscan: %w: %s", err, strings.TrimSpace(string(keyOutput)))
+	}
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("resolve home directory: %w", err)
+	}
+	sshDir := filepath.Join(homeDir, ".ssh")
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		return fmt.Errorf("create %s: %w", sshDir, err)
+	}
+
+	knownHostsPath := filepath.Join(sshDir, "known_hosts")
+	f, err := os.OpenFile(knownHostsPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", knownHostsPath, err)
+	}
+	defer f.Close()
+
+	if _, err := f.Write(keyOutput); err != nil {
+		return fmt.Errorf("write %s: %w", knownHostsPath, err)
+	}
+	return nil
 }
 
 func newConnectKubernetesCommand() *cobra.Command {
