@@ -146,6 +146,18 @@ EOF
   esac
 }
 
+generate_sha256sums() {
+  local sums_path="${DIST_ROOT}/SHA256SUMS"
+  : >"$sums_path"
+  while IFS= read -r f; do
+    [[ -f "$f" ]] || continue
+    filename="$(basename "$f")"
+    sha="$(file_sha256 "$f")"
+    printf "%s  %s\n" "$sha" "$filename" >>"$sums_path"
+  done < <(find "$DIST_ROOT" -maxdepth 1 -type f ! -name "SHA256SUMS" ! -name "RELEASE_NOTES.md" -print | sort)
+  echo "Generated $sums_path"
+}
+
 generate_release_notes() {
   local notes_path="${DIST_ROOT}/RELEASE_NOTES.md"
   local generated_at
@@ -250,6 +262,7 @@ for combo in "${targets[@]}"; do
 done
 popd >/dev/null
 
+generate_sha256sums
 notes_file="$(generate_release_notes)"
 publish_github_release "$notes_file"
 

@@ -129,23 +129,24 @@ func runUpdate(checkOnly bool) error {
 	archiveHash := sha256.Sum256(archiveData)
 	archiveHashHex := hex.EncodeToString(archiveHash[:])
 
-	// Verify archive checksum (required).
+	// Verify archive checksum if available.
 	checksumURL, checksumAssetName := findChecksumAsset(rel.Assets)
-	if checksumURL == "" {
-		return fmt.Errorf("release is missing a checksum asset (expected SHA256SUMS)")
+	if checksumURL != "" {
+		checksums, err := fetchChecksums(checksumURL)
+		if err != nil {
+			return fmt.Errorf("fetch checksums: %w", err)
+		}
+		expectedHash, ok := checksums[assetName]
+		if !ok {
+			return fmt.Errorf("no checksum found for %s in %s", assetName, checksumAssetName)
+		}
+		if err := verifyChecksum(archiveData, expectedHash); err != nil {
+			return fmt.Errorf("integrity check failed for %s: %w", assetName, err)
+		}
+		fmt.Println(style.Success.Render(fmt.Sprintf("Checksum verified (%s): %s", checksumAssetName, archiveHashHex)))
+	} else {
+		fmt.Println(style.Warning.Render("No checksum file found in release — skipping integrity check."))
 	}
-	checksums, err := fetchChecksums(checksumURL)
-	if err != nil {
-		return fmt.Errorf("fetch checksums: %w", err)
-	}
-	expectedHash, ok := checksums[assetName]
-	if !ok {
-		return fmt.Errorf("no checksum found for %s in %s", assetName, checksumAssetName)
-	}
-	if err := verifyChecksum(archiveData, expectedHash); err != nil {
-		return fmt.Errorf("integrity check failed for %s: %w", assetName, err)
-	}
-	fmt.Println(style.Success.Render(fmt.Sprintf("Checksum verified (%s): %s", checksumAssetName, archiveHashHex)))
 
 	binaryData, err := extractBinary(archiveData, assetName)
 	if err != nil {

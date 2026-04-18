@@ -56,10 +56,15 @@ fi
 # Use NPM_TOKEN for auth when set (CI or non-interactive)
 if [[ -n "${NPM_TOKEN:-}" ]]; then
   NPMRC="$(mktemp)"
-  echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > "$NPMRC"
+  NPM_REGISTRY="${NPM_REGISTRY:-https://registry.npmjs.org}"
+  # Strip protocol prefix for .npmrc auth entry
+  registry_host="${NPM_REGISTRY#https:}"
+  registry_host="${registry_host#http:}"
+  echo "${registry_host}/:_authToken=${NPM_TOKEN}" > "$NPMRC"
+  echo "registry=${NPM_REGISTRY}" >> "$NPMRC"
   export NPM_CONFIG_USERCONFIG="$NPMRC"
   trap 'rm -f "$NPMRC"' EXIT
-  echo "Using NPM_TOKEN for registry.npmjs.org"
+  echo "Using NPM_TOKEN for ${NPM_REGISTRY}"
 else
   echo "NPM_TOKEN not set — using default npm auth (run 'npm login' or set NPM_TOKEN)"
 fi
