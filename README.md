@@ -7,7 +7,7 @@ Command-line interface for Prysm zero-trust infrastructure management. Includes 
 ### From Source (Go Install)
 
 ```bash
-go install github.com/warp-run/prysm-cli/cmd/prysm@latest
+go install github.com/prysmsh/cli/cmd/prysm@latest
 ```
 
 This installs the `prysm` binary to `$GOPATH/bin/` (typically `~/go/bin/`). Make sure this directory is in your PATH:

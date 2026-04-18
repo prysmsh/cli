@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package plugin.v1;
 
-option go_package = "github.com/warp-run/prysm-cli/proto/plugin/v1;pluginv1";
+option go_package = "github.com/prysmsh/cli/proto/plugin/v1;pluginv1";
 
 // PluginService is implemented by plugin binaries.
 service PluginService {
