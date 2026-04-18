@@ -1,5 +1,6 @@
-# Binaries
-prysm
+# Binaries (root-level only; do not match cmd/prysm/)
+/prysm
+/prysm-test
 *.exe
 *.exe~
 *.dll

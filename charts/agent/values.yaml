@@ -1,0 +1,46 @@
+image:
+  repository: ghcr.io/prysmsh/prysm-agent
+  tag: latest
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+replicaCount: 1
+
+# Agent configuration — set via configSecret.data
+configSecret:
+  # Name of the secret to create (or use existing)
+  name: prysm-agent-config
+  # Set to false to use an existing secret
+  create: true
+  data:
+    AGENT_TOKEN: ""
+    BACKEND_URL: ""
+    CLUSTER_NAME: ""
+    ORGANIZATION_ID: ""
+    DERP_SERVERS: ""
+    DERP_SERVER: ""
+
+serviceAccount:
+  create: true
+  name: prysm-agent
+  annotations: {}
+
+rbac:
+  create: true
+  # Create pre-defined access service accounts (admin, developer, viewer)
+  createAccessServiceAccounts: true
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    memory: 512Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+podAnnotations: {}
+podLabels: {}

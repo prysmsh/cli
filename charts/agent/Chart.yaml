@@ -1,0 +1,12 @@
+apiVersion: v2
+name: prysm-agent
+description: Prysm agent for Kubernetes clusters
+type: application
+version: 0.1.0
+appVersion: "latest"
+home: https://prysm.sh
+sources:
+  - https://github.com/prysmsh/cli
+maintainers:
+  - name: prysmsh
+    email: support@prysm.sh
