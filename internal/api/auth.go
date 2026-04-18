@@ -186,6 +186,28 @@ func (c *Client) RequestDeviceCode(ctx context.Context) (*DeviceCodeResponse, er
 	return &resp, nil
 }
 
+// CLICodeExchangeResponse is the response from POST /auth/cli/exchange-code.
+type CLICodeExchangeResponse struct {
+	Token          string `json:"token"`
+	RefreshToken   string `json:"refresh_token,omitempty"`
+	ExpiresAt      int64  `json:"expires_at"`
+}
+
+// ExchangeCLICode exchanges a short-lived one-time code for CLI auth tokens.
+func (c *Client) ExchangeCLICode(ctx context.Context, code string) (*CLICodeExchangeResponse, error) {
+	body := struct {
+		Code string `json:"code"`
+	}{Code: code}
+	var resp CLICodeExchangeResponse
+	if _, err := c.Do(ctx, "POST", "/auth/cli/exchange-code", body, &resp); err != nil {
+		return nil, err
+	}
+	if resp.Token == "" {
+		return nil, fmt.Errorf("exchange response missing token")
+	}
+	return &resp, nil
+}
+
 // PollDeviceToken performs a single poll for the device token.
 // It returns the parsed response (which may contain an Error field for
 // authorization_pending, slow_down, access_denied, or expired_token).

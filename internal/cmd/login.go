@@ -195,15 +195,38 @@ func runOAuthLogin(ctx context.Context, app *App, provider string) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/oauth/callback", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
-		printDebug("OAuth callback received (state=%s, has_token=%v)", q.Get("state"), q.Get("token") != "")
+		printDebug("OAuth callback received (state=%s, has_token=%v, has_code=%v)", q.Get("state"), q.Get("token") != "", q.Get("code") != "")
 		callbackState := q.Get("state")
 		if callbackState != state {
 			http.Error(w, "Invalid state parameter (possible CSRF)", http.StatusBadRequest)
 			done <- result{err: errors.New("OAuth state mismatch - possible CSRF attack")}
 			return
 		}
+
 		token := q.Get("token")
 		expStr := q.Get("expires_at")
+		refreshToken := q.Get("refresh_token")
+
+		// Backend sends a short-lived code instead of the token directly.
+		// Exchange it for real credentials via the backend API.
+		if token == "" {
+			code := q.Get("code")
+			if code == "" {
+				http.Error(w, "Missing token or code", http.StatusBadRequest)
+				done <- result{err: errors.New("callback missing token and code")}
+				return
+			}
+			exchResp, err := app.API.ExchangeCLICode(r.Context(), code)
+			if err != nil {
+				http.Error(w, "Code exchange failed", http.StatusInternalServerError)
+				done <- result{err: fmt.Errorf("exchange CLI auth code: %w", err)}
+				return
+			}
+			token = exchResp.Token
+			expStr = fmt.Sprintf("%d", exchResp.ExpiresAt)
+			refreshToken = exchResp.RefreshToken
+		}
+
 		if token == "" || expStr == "" {
 			http.Error(w, "Missing token or expires_at", http.StatusBadRequest)
 			done <- result{err: errors.New("callback missing token or expires_at")}
@@ -213,7 +236,6 @@ func runOAuthLogin(ctx context.Context, app *App, provider string) error {
 		if _, err := fmt.Sscanf(expStr, "%d", &expiresAt); err != nil {
 			expiresAt = 0
 		}
-		refreshToken := q.Get("refresh_token")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(oauthSuccessPage))
