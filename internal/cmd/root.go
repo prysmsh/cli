@@ -500,21 +500,23 @@ func bucketCommands(commands []*cobra.Command) (map[string][]*cobra.Command, []s
 
 func newCompletionCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:   "completion [bash|zsh]",
+		Use:   "completion [bash|zsh|fish]",
 		Short: "Generate shell completion script",
-		Long: `Generate shell completion code for bash or zsh.
+		Long: `Generate shell completion code for bash, zsh, or fish.
 
 When called without arguments, detects your current shell automatically.
 
 To load in current session:
   . <(prysm completion bash)   # bash
   . <(prysm completion zsh)    # zsh
+  prysm completion fish | source  # fish
 
-To enable permanently, add to ~/.bashrc or ~/.zshrc:
+To enable permanently, add to ~/.bashrc, ~/.zshrc, or fish config:
   if command -v prysm &>/dev/null; then eval "$(prysm completion bash)" fi
-  if command -v prysm &>/dev/null; then eval "$(prysm completion zsh)" fi`,
+  if command -v prysm &>/dev/null; then eval "$(prysm completion zsh)" fi
+  prysm completion fish > ~/.config/fish/completions/prysm.fish`,
 		DisableFlagsInUseLine: true,
-		ValidArgs:             []string{"bash", "zsh"},
+		ValidArgs:             []string{"bash", "zsh", "fish"},
 		Args:                  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			shell := ""
@@ -527,8 +529,10 @@ To enable permanently, add to ~/.bashrc or ~/.zshrc:
 					shell = "zsh"
 				} else if strings.HasSuffix(shellPath, "/bash") {
 					shell = "bash"
+				} else if strings.HasSuffix(shellPath, "/fish") {
+					shell = "fish"
 				} else {
-					return fmt.Errorf("could not detect shell from $SHELL=%q — specify bash or zsh explicitly", shellPath)
+					return fmt.Errorf("could not detect shell from $SHELL=%q — specify bash, zsh, or fish explicitly", shellPath)
 				}
 				fmt.Fprintf(os.Stderr, "%s\n", style.MutedStyle.Render(fmt.Sprintf("Detected shell: %s", shell)))
 			}
@@ -538,8 +542,10 @@ To enable permanently, add to ~/.bashrc or ~/.zshrc:
 				return cmd.Root().GenBashCompletion(os.Stdout)
 			case "zsh":
 				return cmd.Root().GenZshCompletion(os.Stdout)
+			case "fish":
+				return cmd.Root().GenFishCompletion(os.Stdout, true)
 			default:
-				return fmt.Errorf("unsupported shell %q — supported: bash, zsh", shell)
+				return fmt.Errorf("unsupported shell %q — supported: bash, zsh, fish", shell)
 			}
 		},
 	}

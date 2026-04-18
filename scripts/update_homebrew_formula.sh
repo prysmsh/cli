@@ -54,12 +54,12 @@ AMD64_LINUX_SHA=$(sha256_for "$(artifact_path linux amd64)")
 # homebrew-tap is typically a sibling (../homebrew-tap) or submodule
 FORMULA_DIR="${HOMEBREW_TAP_DIR:-${ROOT_DIR}/../homebrew-tap}/Formula"
 mkdir -p "$FORMULA_DIR"
-FORMULA_PATH="${FORMULA_DIR}/cli.rb"
+FORMULA_PATH="${FORMULA_DIR}/prysm.rb"
 
 cat >"$FORMULA_PATH" <<EOF
 # frozen_string_literal: true
 
-class PrysmCli < Formula
+class Prysm < Formula
   desc "Prysm zero-trust infrastructure CLI"
   homepage "https://prysm.sh"
   version "${VERSION}"
