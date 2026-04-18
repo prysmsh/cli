@@ -241,8 +241,8 @@ for combo in "${targets[@]}"; do
   extension=""
   [[ "$os" == "windows" ]] && extension=".exe"
 
-  env CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
-    go build -trimpath -ldflags "-s -w -X github.com/warp-run/prysm-cli/internal/cmd.version=${VERSION}" \
+  env CGO_ENABLED=0 GOWORK=off GOOS="$os" GOARCH="$arch" \
+    go build -trimpath -mod=mod -ldflags "-s -w -X github.com/prysmsh/cli/internal/cmd.version=${VERSION}" \
     -o "${output}${extension}" ./cmd/prysm
 
   chmod 0755 "${output}${extension}"
