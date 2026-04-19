@@ -65,6 +65,7 @@ var version = "dev"
 // Commands not in the map are listed under "Other".
 var commandGroup = map[string]string{
 	"login":      "Get started",
+	"install":    "Get started",
 	"connect":    "Get started",
 	"clusters":   "Infrastructure",
 	"ssh":        "Infrastructure",
@@ -103,7 +104,7 @@ var menuGroupOrder = []string{
 // menuOrder controls the display order of commands within each group.
 // Lower values appear first. Commands not listed default to 50.
 var menuOrder = map[string]int{
-	"login": 1, "connect": 2,
+	"login": 1, "install": 2, "connect": 3,
 	"clusters": 1, "ssh": 2, "tunnel": 3, "mesh": 4, "credential": 5, "docker": 6,
 	"security": 1, "vault": 2, "audit": 3, "sessions": 4, "honeypots": 5,
 	"session": 1, "request": 2, "logout": 3, "team": 4, "profile": 5,
@@ -133,6 +134,7 @@ var menuShortDesc = map[string]string{
 	"ai":         "AI assistant, agents, and embeddings",
 	"diagnose":   "Run network and access diagnostics",
 	"status":     "System health check",
+	"install":    "Install agent on a remote host via SSH",
 	"update":     "Update the CLI",
 	"plugin":     "Manage CLI plugins",
 	"completion": "Generate shell completions",
@@ -229,6 +231,7 @@ func init() {
 		newHoneypotsCommand(),
 		newPluginCommand(),
 		newDockerCommand(),
+		newInstallCommand(),
 		newUpdateCommand(),
 		newTeamCommand(),
 		newProfileCommand(),
