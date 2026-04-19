@@ -208,6 +208,7 @@ func generateInstallCompose(hostName, backendURL, token string, orgID uint64, de
 	sb.WriteString(fmt.Sprintf("      CLUSTER_NAME: %s\n", quote(hostName)))
 	sb.WriteString(fmt.Sprintf("      ORGANIZATION_ID: %s\n", quote(fmt.Sprintf("%d", orgID))))
 	sb.WriteString(fmt.Sprintf("      AGENT_MODE: %s\n", quote("docker")))
+	sb.WriteString(fmt.Sprintf("      AGENT_TYPE: %s\n", quote("docker")))
 	if derpURL != "" {
 		sb.WriteString(fmt.Sprintf("      DERP_SERVERS: %s\n", quote(derpURL)))
 	}

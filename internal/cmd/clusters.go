@@ -54,56 +54,18 @@ func newClustersListCommand() *cobra.Command {
 			ctx, cancel := context.WithTimeout(cmd.Context(), 15*time.Second)
 			defer cancel()
 
-			var data struct {
-				Clusters []struct {
-					ID             uint   `json:"id"`
-					PublicID       string `json:"public_id"`
-					Name           string `json:"name"`
-					Status         string `json:"status"`
-					Region         string `json:"region"`
-					KubeVersion    string `json:"kube_version"`
-					NodeCount      int    `json:"node_count"`
-					PodCount       int    `json:"pod_count"`
-					ServiceCount   int    `json:"service_count"`
-					NamespaceCount int    `json:"namespace_count"`
-					LastSeen       string `json:"last_seen"`
-				} `json:"clusters"`
-			}
-			resp, err := app.API.Do(ctx, "GET", "clusters", nil, &data)
+			data, err := fetchClusterList(ctx, app)
 			if err != nil {
-				return fmt.Errorf("list clusters: %w", err)
-			}
-			if resp != nil && resp.StatusCode >= 400 {
-				return fmt.Errorf("list clusters: %s", resp.Status)
+				return err
 			}
 
-			if len(data.Clusters) == 0 {
+			clusters := filterByType(data, "kubernetes", "")
+			if len(clusters) == 0 {
 				fmt.Println("No clusters registered. Deploy an agent to register a cluster.")
 				return nil
 			}
 
-			headers := []string{"PUBLIC ID", "NAME", "STATUS", "REGION", "NODES", "PODS", "SVCS"}
-			rows := make([][]string, 0, len(data.Clusters))
-			for _, c := range data.Clusters {
-				statusStr := style.Error.Render(c.Status)
-				if c.Status == "connected" {
-					statusStr = style.Success.Render(c.Status)
-				}
-				pid := c.PublicID
-				if pid == "" {
-					pid = fmt.Sprintf("(id:%d)", c.ID)
-				}
-				rows = append(rows, []string{
-					pid,
-					truncate(c.Name, 30),
-					statusStr,
-					c.Region,
-					fmt.Sprintf("%d", c.NodeCount),
-					fmt.Sprintf("%d", c.PodCount),
-					fmt.Sprintf("%d", c.ServiceCount),
-				})
-			}
-			ui.PrintTable(headers, rows)
+			printClusterTable(clusters)
 			return nil
 		},
 	}
