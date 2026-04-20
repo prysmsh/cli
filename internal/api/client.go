@@ -147,6 +147,22 @@ func NewClient(base string, opts ...Option) *Client {
 	}
 	tlsutil.ApplyPQCConfig(baseTransport.TLSClientConfig)
 
+	// Use public DNS (1.1.1.1/8.8.8.8) via Go's pure-Go resolver to avoid
+	// Tailscale MagicDNS or other VPN DNS blocking external domain lookups.
+	// Requires GODEBUG=netdns=go (set in main.go init) to bypass cgo resolver.
+	publicDNS := &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			d := net.Dialer{Timeout: 3 * time.Second}
+			conn, err := d.DialContext(ctx, "tcp", "1.1.1.1:53")
+			if err != nil {
+				conn, err = d.DialContext(ctx, "tcp", "8.8.8.8:53")
+			}
+			return conn, err
+		},
+	}
+	dialer := &net.Dialer{Timeout: 10 * time.Second, Resolver: publicDNS}
+
 	if client.dialOverride != "" {
 		dialAddr := client.dialOverride
 		baseHost := parsed.Host
@@ -157,13 +173,14 @@ func NewClient(base string, opts ...Option) *Client {
 				baseHost += ":80"
 			}
 		}
-		dialer := &net.Dialer{Timeout: 30 * time.Second}
 		baseTransport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 			if strings.EqualFold(addr, baseHost) {
 				return dialer.DialContext(ctx, network, dialAddr)
 			}
 			return dialer.DialContext(ctx, network, addr)
 		}
+	} else {
+		baseTransport.DialContext = dialer.DialContext
 	}
 
 	client.httpClient.Transport = baseTransport
