@@ -1,0 +1,22 @@
+[Unit]
+Description=Prysm Mesh Daemon
+Documentation=https://docs.prysm.sh
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/prysm-meshd
+Restart=on-failure
+RestartSec=5
+RuntimeDirectory=prysm
+RuntimeDirectoryMode=0750
+
+# Security hardening
+NoNewPrivileges=no
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/run/prysm /var/lib/prysm
+
+[Install]
+WantedBy=multi-user.target
