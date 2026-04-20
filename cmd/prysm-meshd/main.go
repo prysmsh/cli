@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 
 	"github.com/prysmsh/cli/internal/meshd"
@@ -14,7 +15,10 @@ import (
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 
-	if os.Getuid() != 0 {
+	// On Linux, prysm-meshd needs root for TUN device creation.
+	// On macOS, the Network Extension handles the tunnel — meshd only needs
+	// socket access (provided by the LaunchDaemon running as root).
+	if os.Getuid() != 0 && runtime.GOOS != "darwin" {
 		fmt.Fprintln(os.Stderr, "prysm-meshd must run as root (use systemd or sudo)")
 		os.Exit(1)
 	}

@@ -98,6 +98,8 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 		resp = s.handleStatus()
 	case "refresh_token":
 		resp = s.handleRefreshToken(req)
+	case "wg_config":
+		resp = s.handleWGConfig(ctx, req)
 	default:
 		resp = Response{Status: "error", Error: "unknown command: " + req.Cmd}
 	}
@@ -197,6 +199,33 @@ func (s *Server) handleRefreshToken(req Request) Response {
 
 	s.lifecycle.RefreshToken(req.Token)
 	return Response{Status: "ok"}
+}
+
+// handleWGConfig returns the WireGuard tunnel configuration (private key + peers)
+// for the Network Extension to use. The tray app calls this after connect to get
+// the crypto material needed to start the packet tunnel.
+func (s *Server) handleWGConfig(_ context.Context, _ Request) Response {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if !s.running || s.lifecycle == nil {
+		return Response{Status: "error", Error: "not connected"}
+	}
+
+	wgCfg := s.lifecycle.GetWGConfig()
+	if wgCfg == nil {
+		return Response{Status: "error", Error: "wireguard not active"}
+	}
+
+	return Response{
+		Status: "ok",
+		WGConfig: &WGConfig{
+			PrivateKey: wgCfg.PrivateKey,
+			OverlayIP:  wgCfg.OverlayIP,
+			DERPURL:    wgCfg.DERPURL,
+			Peers:      wgCfg.Peers,
+		},
+	}
 }
 
 func (s *Server) writeResponse(conn net.Conn, resp Response) {

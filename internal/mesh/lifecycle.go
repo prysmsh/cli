@@ -218,6 +218,44 @@ func (l *Lifecycle) RefreshToken(token string) {
 	}
 }
 
+// WGConfigData holds WireGuard config for the macOS Network Extension.
+type WGConfigData struct {
+	PrivateKey string              `json:"private_key"`
+	OverlayIP  string              `json:"overlay_ip"`
+	DERPURL    string              `json:"derp_url"`
+	Peers      []map[string]string `json:"peers"`
+}
+
+// GetWGConfig returns the active WireGuard configuration (key + peers) for use
+// by the macOS Network Extension. Returns nil if WireGuard is not active.
+func (l *Lifecycle) GetWGConfig() *WGConfigData {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+
+	if l.wgTunnel == nil {
+		return nil
+	}
+
+	peers := make([]map[string]string, 0, len(l.wgTunnel.GetPeers()))
+	for _, p := range l.wgTunnel.GetPeers() {
+		peer := map[string]string{
+			"public_key": p.PublicKey,
+			"endpoint":   p.Endpoint,
+		}
+		if len(p.AllowedIPs) > 0 {
+			peer["allowed_ips"] = strings.Join(p.AllowedIPs, ",")
+		}
+		peers = append(peers, peer)
+	}
+
+	return &WGConfigData{
+		PrivateKey: l.wgTunnel.PrivateKeyBase64(),
+		OverlayIP:  l.wgTunnel.OverlayIP(),
+		DERPURL:    l.cfg.DERPURL,
+		Peers:      peers,
+	}
+}
+
 // shutdown tears down DERP, WireGuard, and signals completion via done channel.
 func (l *Lifecycle) shutdown() {
 	l.mu.Lock()

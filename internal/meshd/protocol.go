@@ -12,12 +12,21 @@ type Request struct {
 
 // Response is a reply from daemon to CLI.
 type Response struct {
-	Status    string `json:"status"`              // "ok", "connected", "disconnected", "error"
-	OverlayIP string `json:"overlay_ip,omitempty"`
-	Interface string `json:"interface,omitempty"`
-	PeerCount int    `json:"peer_count,omitempty"`
-	Uptime    int64  `json:"uptime,omitempty"`     // seconds
-	Error     string `json:"error,omitempty"`
+	Status    string    `json:"status"`              // "ok", "connected", "disconnected", "error"
+	OverlayIP string    `json:"overlay_ip,omitempty"`
+	Interface string    `json:"interface,omitempty"`
+	PeerCount int       `json:"peer_count,omitempty"`
+	Uptime    int64     `json:"uptime,omitempty"`     // seconds
+	Error     string    `json:"error,omitempty"`
+	WGConfig  *WGConfig `json:"wg_config,omitempty"`  // returned by "wg_config" command
+}
+
+// WGConfig contains WireGuard tunnel configuration for the Network Extension.
+type WGConfig struct {
+	PrivateKey string              `json:"private_key"` // base64
+	OverlayIP  string              `json:"overlay_ip"`
+	DERPURL    string              `json:"derp_url"`
+	Peers      []map[string]string `json:"peers"`
 }
 
 const SocketPath = "/var/run/prysm/mesh.sock"
