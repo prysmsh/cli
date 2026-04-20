@@ -24,9 +24,11 @@ import (
 
 	"github.com/prysmsh/cli/internal/api"
 	"github.com/prysmsh/cli/internal/derp"
+	"github.com/prysmsh/cli/internal/meshd"
 	"github.com/prysmsh/cli/internal/style"
 	"github.com/prysmsh/cli/internal/ui"
 	"github.com/prysmsh/cli/internal/util"
+	"github.com/prysmsh/cli/internal/wg"
 	"github.com/prysmsh/cli/plugins/exit"
 	"github.com/prysmsh/cli/plugins/subnet"
 )
@@ -161,6 +163,7 @@ func newMeshConnectCommand() *cobra.Command {
 	c.Flags().BoolVarP(&foreground, "foreground", "f", false, "run in foreground (stay in terminal; default is background)")
 	c.Flags().IntVar(&socks5Port, "socks5-port", 0, "local port for SOCKS5 proxy to reach mesh routes (0 = disabled)")
 	c.Flags().BoolVar(&subnetEnabled, "subnet", true, "inject OS routes for cluster CIDRs (transparent routing; needs root/sudo)")
+	c.Flags().Bool("wireguard", true, "enable WireGuard tunnel for direct peer connectivity (requires sudo)")
 	return c
 }
 
@@ -169,6 +172,20 @@ func newMeshDisconnectCommand() *cobra.Command {
 		Use:   "disconnect",
 		Short: "Leave the DERP mesh network and stop the background process",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Try daemon first.
+			if meshd.IsRunning() {
+				resp, err := meshd.Disconnect()
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "%s\n", style.Warning.Render(fmt.Sprintf("meshd disconnect: %v", err)))
+				} else {
+					fmt.Println(style.Success.Render("Disconnected from mesh (via daemon)."))
+					if resp.Error != "" {
+						fmt.Fprintf(os.Stderr, "%s\n", style.Warning.Render(resp.Error))
+					}
+					return nil
+				}
+			}
+
 			app := MustApp()
 			home := getPrysmHome()
 
@@ -325,6 +342,9 @@ func runMeshConnectBackground(cmd *cobra.Command) error {
 	if subnet, _ := cmd.Flags().GetBool("subnet"); !subnet {
 		args = append(args, "--subnet=false")
 	}
+	if wg, _ := cmd.Flags().GetBool("wireguard"); !wg {
+		args = append(args, "--wireguard=false")
+	}
 	child := exec.Command(exe, args...)
 	child.Stdin = nil
 	child.Stdout = logFile
@@ -361,6 +381,40 @@ func runMeshConnect(cmd *cobra.Command) error {
 		return fmt.Errorf("write DERP pidfile: %w", err)
 	}
 	defer removeDerpPidfile(home)
+
+	// Check if prysm-meshd daemon is running — delegate to it (no sudo needed).
+	if meshd.IsRunning() {
+		app := MustApp()
+		sess, err := app.Sessions.Load()
+		if err != nil {
+			return err
+		}
+		if sess == nil {
+			return fmt.Errorf("no active session; run `prysm login`")
+		}
+		deviceID, err := derp.EnsureDeviceID(app.Config.HomeDir)
+		if err != nil {
+			return err
+		}
+		relay := app.Config.DERPServerURL
+		if relay == "" {
+			relay = sess.DERPServerURL
+		}
+		apiURL := app.Config.APIBaseURL
+
+		resp, err := meshd.Connect(
+			sess.Token, apiURL, relay, deviceID, app.Config.HomeDir,
+		)
+		if err != nil {
+			return fmt.Errorf("meshd connect: %w", err)
+		}
+		if resp.Error != "" {
+			return fmt.Errorf("meshd: %s", resp.Error)
+		}
+		fmt.Println(style.Success.Render(fmt.Sprintf("Mesh connected via daemon (%s on %s)", resp.OverlayIP, resp.Interface)))
+		fmt.Println(style.MutedStyle.Render("Daemon manages the tunnel — this CLI can exit safely."))
+		return nil
+	}
 
 	app := MustApp()
 	sess, err := app.Sessions.Load()
@@ -409,6 +463,8 @@ func runMeshConnect(cmd *cobra.Command) error {
 	}); err != nil {
 		return err
 	}
+
+	wgEnabled, _ := cmd.Flags().GetBool("wireguard")
 
 	headers := make(http.Header)
 	headers.Set("Authorization", "Bearer "+sess.Token)
@@ -476,6 +532,24 @@ func runMeshConnect(cmd *cobra.Command) error {
 	derpOpts = append(derpOpts, derp.WithSessionToken(sess.Token))
 	derpClient = derp.NewClient(relay, deviceID, derpOpts...)
 	client := derpClient
+
+	// WireGuard mesh tunnel: register key, get overlay IP, bring up interface.
+	// Uses DERP as transport — WireGuard packets flow through the DERP WebSocket relay.
+	var wgTunnel *wg.Tunnel
+	if wgEnabled {
+		tun, bind, wgErr := wg.SetupMeshWireGuardDERP(ctx, app.API, app.Config.HomeDir, deviceID, derpClient)
+		if wgErr != nil {
+			fmt.Println(style.Warning.Render(fmt.Sprintf("WireGuard tunnel disabled: %v", wgErr)))
+		} else {
+			wgTunnel = tun
+			defer wgTunnel.Stop()
+			// Wire inbound WireGuard packets from DERP to the bind.
+			derpClient.WGPacketHandler = func(fromPeerID string, packet []byte) {
+				bind.DeliverPacket(fromPeerID, packet)
+			}
+			fmt.Println(style.Success.Render(fmt.Sprintf("WireGuard tunnel active (%s on %s) via DERP", wgTunnel.OverlayIP(), wgTunnel.InterfaceName())))
+		}
+	}
 
 	socks5Port, _ := cmd.Flags().GetInt("socks5-port")
 	subnetEnabled, _ := cmd.Flags().GetBool("subnet")
