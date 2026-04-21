@@ -23,11 +23,12 @@ type Tunnel struct {
 	ExternalURL     string    `json:"external_url"`
 	IsPublic        bool      `json:"is_public"`
 	PublicSubdomain string    `json:"public_subdomain,omitempty"`
-	TargetService   string    `json:"target_service,omitempty"`
-	TargetNamespace string    `json:"target_namespace,omitempty"`
-	CreatedBy       int64     `json:"created_by"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	TargetService   string     `json:"target_service,omitempty"`
+	TargetNamespace string     `json:"target_namespace,omitempty"`
+	LastHeartbeatAt *time.Time `json:"last_heartbeat_at,omitempty"`
+	CreatedBy       int64      `json:"created_by"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
 }
 
 // TunnelCreateRequest encapsulates payload for tunnel creation.
@@ -89,6 +90,15 @@ func (c *Client) ListTunnels(ctx context.Context, deviceID string) ([]Tunnel, er
 func (c *Client) DeleteTunnel(ctx context.Context, tunnelID int64) error {
 	endpoint := fmt.Sprintf("/tunnels/%d", tunnelID)
 	_, err := c.Do(ctx, "DELETE", endpoint, nil, nil)
+	return err
+}
+
+// HeartbeatTunnel refreshes the tunnel's LastHeartbeatAt timestamp. The backend
+// reaper expires tunnels that go silent, so the CLI exposing a tunnel is
+// expected to call this periodically (every ~30s) while running.
+func (c *Client) HeartbeatTunnel(ctx context.Context, tunnelID int64) error {
+	endpoint := fmt.Sprintf("/tunnels/%d/heartbeat", tunnelID)
+	_, err := c.Do(ctx, "POST", endpoint, nil, nil)
 	return err
 }
 

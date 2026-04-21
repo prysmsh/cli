@@ -63,6 +63,9 @@ type Client struct {
 	conn   *websocket.Conn
 	cancel context.CancelFunc
 
+	ready     chan struct{}
+	readyOnce sync.Once
+
 	// TunnelTrafficHandler is optional; when set, route_setup and traffic_data are forwarded.
 	TunnelTrafficHandler TunnelTrafficHandler
 
@@ -156,6 +159,7 @@ func NewClient(url, deviceID string, opts ...Option) *Client {
 		},
 		logLevel: LogInfo,
 		logger:   log.New(os.Stdout, "", 0),
+		ready:    make(chan struct{}),
 		capabilities: map[string]interface{}{
 			"platform":  "cli",
 			"features":  []string{"service_discovery", "remote_commands"},
@@ -194,6 +198,7 @@ func (c *Client) Run(ctx context.Context) error {
 	if err := c.sendRegistration(); err != nil {
 		return fmt.Errorf("send registration: %w", err)
 	}
+	c.readyOnce.Do(func() { close(c.ready) })
 
 	pingTicker := time.NewTicker(30 * time.Second)
 	heartbeatTicker := time.NewTicker(10 * time.Second)
@@ -255,6 +260,13 @@ func (c *Client) Run(ctx context.Context) error {
 	case err := <-errCh:
 		return err
 	}
+}
+
+// Ready returns a channel closed once the registration frame has been written
+// to the relay. Callers should treat this as "CLI is reachable over DERP" —
+// the relay does not send an explicit ack.
+func (c *Client) Ready() <-chan struct{} {
+	return c.ready
 }
 
 // Close terminates the websocket connection.

@@ -158,47 +158,6 @@ Press Ctrl+C to stop when running in foreground.`,
 				return fmt.Errorf("no active session; run `prysm login`")
 			}
 
-			// 1. Create tunnel via API
-			var tunnel *api.Tunnel
-			if err := ui.WithSpinner("Creating tunnel...", func() error {
-				createCtx, createCancel := context.WithTimeout(cmd.Context(), 20*time.Second)
-				defer createCancel()
-				var createErr error
-				tunnel, createErr = app.API.CreateTunnel(createCtx, api.TunnelCreateRequest{
-					Port:           port,
-					Name:           strings.TrimSpace(name),
-					TargetDeviceID: deviceID,
-					ToPeerDeviceID: strings.TrimSpace(toPeer),
-					ExternalPort:   externalPort,
-					Protocol:       "tcp",
-					IsPublic:       public,
-				})
-				return createErr
-			}); err != nil {
-				return err
-			}
-
-			// 2. Print tunnel info
-			fmt.Println()
-			fmt.Println(style.Success.Copy().Bold(true).Render(fmt.Sprintf("Tunnel active: localhost:%d", port)))
-			if tunnel.IsPublic && tunnel.ExternalURL != "" {
-				fmt.Println(style.Info.Render(fmt.Sprintf("  Public URL:  %s", tunnel.ExternalURL)))
-			}
-			fmt.Println(style.MutedStyle.Render(fmt.Sprintf("  Mesh:        prysm tunnel connect --peer %s --port %d", deviceID, port)))
-			fmt.Printf("  Tunnel ID:   %d\n", tunnel.ID)
-			fmt.Printf("  Status:      %s\n", tunnel.Status)
-			if tunnel.ToPeerDeviceID != "" {
-				fmt.Printf("  Restricted:  %s\n", tunnel.ToPeerDeviceID)
-			}
-			fmt.Println()
-			if os.Getenv("PRYSM_TUNNEL_DAEMON") != "" {
-				fmt.Println(style.MutedStyle.Render("Running in background. Use `prysm tunnel delete <id>` to stop."))
-			} else {
-				fmt.Println(style.MutedStyle.Render("Press Ctrl+C to stop"))
-			}
-			fmt.Println()
-
-			// 3. Connect to DERP relay and handle tunnel traffic
 			ctx, cancel := context.WithCancel(cmd.Context())
 			defer cancel()
 
@@ -219,6 +178,16 @@ Press Ctrl+C to stop when running in foreground.`,
 			routeConns := make(map[string]net.Conn)
 			routeConnsMu := sync.RWMutex{}
 			var derpClient *derp.Client
+
+			// Per-request log state; only populated in foreground (daemon mode is silent).
+			type pendingReq struct {
+				start  time.Time
+				method string
+				path   string
+			}
+			showReqLog := os.Getenv("PRYSM_TUNNEL_DAEMON") == ""
+			reqLogs := make(map[string]*pendingReq)
+			reqLogsMu := sync.Mutex{}
 
 			headers := make(http.Header)
 			headers.Set("Authorization", "Bearer "+sess.Token)
@@ -242,6 +211,19 @@ Press Ctrl+C to stop when running in foreground.`,
 				if data != nil {
 					// traffic_data: forward to existing local connection
 					logTunnel("[tunnel] traffic_data route=%s len=%d\n", routeID, len(data))
+					if showReqLog {
+						// First bytes of a request carry the HTTP request line. Only
+						// stamp the earliest observation per route — skip subsequent
+						// chunks (body, keep-alive continuations) until a response is
+						// seen and the entry is cleared.
+						reqLogsMu.Lock()
+						if _, exists := reqLogs[routeID]; !exists {
+							if method, path, ok := parseHTTPRequestLine(data); ok {
+								reqLogs[routeID] = &pendingReq{start: time.Now(), method: method, path: path}
+							}
+						}
+						reqLogsMu.Unlock()
+					}
 					routeConnsMu.RLock()
 					conn := routeConns[routeID]
 					routeConnsMu.RUnlock()
@@ -278,6 +260,20 @@ Press Ctrl+C to stop when running in foreground.`,
 						n, readErr := conn.Read(buf)
 						if n > 0 {
 							logTunnel("[tunnel] read %d bytes from local, sending traffic_data\n", n)
+							if showReqLog {
+								// Response status line is in the first chunk from the
+								// local server. Pair it with the pending request and
+								// print one log line per request/response round-trip.
+								if status, ok := parseHTTPStatusLine(buf[:n]); ok {
+									reqLogsMu.Lock()
+									entry := reqLogs[routeID]
+									delete(reqLogs, routeID)
+									reqLogsMu.Unlock()
+									if entry != nil {
+										printTunnelRequest(entry.method, entry.path, status, time.Since(entry.start))
+									}
+								}
+							}
 							if sendErr := derpClient.SendTrafficData(routeID, buf[:n]); sendErr != nil {
 								logTunnel("[tunnel] SendTrafficData error: %v\n", sendErr)
 								return
@@ -304,6 +300,86 @@ Press Ctrl+C to stop when running in foreground.`,
 			errCh := make(chan error, 1)
 			go func() {
 				errCh <- derpClient.Run(ctx)
+			}()
+
+			// 1. Wait until the DERP socket is up + registered. Only then is it honest to
+			//    advertise a tunnel — incoming requests before this point would get
+			//    "device not connected" from the backend proxy.
+			select {
+			case <-derpClient.Ready():
+			case runErr := <-errCh:
+				derpClient.Close()
+				return fmt.Errorf("connect to DERP relay: %w", runErr)
+			case <-time.After(15 * time.Second):
+				derpClient.Close()
+				return fmt.Errorf("timed out connecting to DERP relay at %s", relay)
+			case <-ctx.Done():
+				derpClient.Close()
+				return ctx.Err()
+			}
+
+			// 2. Create tunnel record via API. The relay already knows about this CLI,
+			//    so the backend's pre-registration handshake will resolve cleanly.
+			var tunnel *api.Tunnel
+			if err := ui.WithSpinner("Creating tunnel...", func() error {
+				createCtx, createCancel := context.WithTimeout(ctx, 20*time.Second)
+				defer createCancel()
+				var createErr error
+				tunnel, createErr = app.API.CreateTunnel(createCtx, api.TunnelCreateRequest{
+					Port:           port,
+					Name:           strings.TrimSpace(name),
+					TargetDeviceID: deviceID,
+					ToPeerDeviceID: strings.TrimSpace(toPeer),
+					ExternalPort:   externalPort,
+					Protocol:       "tcp",
+					IsPublic:       public,
+				})
+				return createErr
+			}); err != nil {
+				derpClient.Close()
+				return err
+			}
+
+			// 3. Print tunnel info
+			fmt.Println()
+			fmt.Println(style.Success.Copy().Bold(true).Render(fmt.Sprintf("Tunnel active: localhost:%d", port)))
+			if tunnel.IsPublic && tunnel.ExternalURL != "" {
+				fmt.Println(style.Info.Render(fmt.Sprintf("  Public URL:  %s", tunnel.ExternalURL)))
+			}
+			fmt.Println(style.MutedStyle.Render(fmt.Sprintf("  Mesh:        prysm tunnel connect --peer %s --port %d", deviceID, port)))
+			fmt.Printf("  Tunnel ID:   %d\n", tunnel.ID)
+			fmt.Printf("  Status:      %s\n", tunnel.Status)
+			if tunnel.ToPeerDeviceID != "" {
+				fmt.Printf("  Restricted:  %s\n", tunnel.ToPeerDeviceID)
+			}
+			fmt.Println()
+			if os.Getenv("PRYSM_TUNNEL_DAEMON") != "" {
+				fmt.Println(style.MutedStyle.Render("Running in background. Use `prysm tunnel delete <id>` to stop."))
+			} else {
+				fmt.Println(style.MutedStyle.Render("Press Ctrl+C to stop"))
+			}
+			fmt.Println()
+
+			// Heartbeat loop: the backend reaper expires tunnels with stale
+			// heartbeats so that kill -9 / lost-network cases don't leave zombie
+			// rows and dead public URLs behind.
+			hbCtx, hbCancel := context.WithCancel(ctx)
+			defer hbCancel()
+			go func() {
+				ticker := time.NewTicker(30 * time.Second)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-hbCtx.Done():
+						return
+					case <-ticker.C:
+						reqCtx, reqCancel := context.WithTimeout(hbCtx, 10*time.Second)
+						if err := app.API.HeartbeatTunnel(reqCtx, tunnel.ID); err != nil {
+							logTunnel("[tunnel] heartbeat failed: %v\n", err)
+						}
+						reqCancel()
+					}
+				}
 			}()
 
 			sigCh := make(chan os.Signal, 1)
@@ -1004,7 +1080,7 @@ func newTunnelListCommand() *cobra.Command {
 				return nil
 			}
 
-			fmt.Printf("%-6s %-12s %-8s %-10s %-10s %-8s %s\n", "ID", "DEVICE", "PORT", "EXT.PORT", "TO_PEER", "STATUS", "PUBLIC URL")
+			fmt.Printf("%-6s %-12s %-8s %-10s %-10s %-8s %-10s %s\n", "ID", "DEVICE", "PORT", "EXT.PORT", "TO_PEER", "STATUS", "LAST HB", "PUBLIC URL")
 			for _, t := range tunnels {
 				toPeer := "-"
 				if t.ToPeerDeviceID != "" {
@@ -1014,8 +1090,8 @@ func newTunnelListCommand() *cobra.Command {
 				if t.IsPublic && t.ExternalURL != "" {
 					publicURL = t.ExternalURL
 				}
-				fmt.Printf("%-6d %-12s %-8d %-10d %-10s %-8s %s\n",
-					t.ID, truncate(t.TargetDeviceID, 12), t.Port, t.ExternalPort, truncate(toPeer, 10), t.Status, publicURL)
+				fmt.Printf("%-6d %-12s %-8d %-10d %-10s %-8s %-10s %s\n",
+					t.ID, truncate(t.TargetDeviceID, 12), t.Port, t.ExternalPort, truncate(toPeer, 10), t.Status, formatHeartbeatAge(t.LastHeartbeatAt), publicURL)
 			}
 			return nil
 		},
