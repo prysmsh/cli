@@ -33,15 +33,17 @@ type Tunnel struct {
 
 // TunnelCreateRequest encapsulates payload for tunnel creation.
 type TunnelCreateRequest struct {
-	Port            int    `json:"port"`
-	Name            string `json:"name,omitempty"`
-	TargetDeviceID  string `json:"target_device_id"`
-	ToPeerDeviceID  string `json:"to_peer_device_id,omitempty"`
-	ExternalPort    int    `json:"external_port,omitempty"`
-	Protocol        string `json:"protocol,omitempty"`
-	IsPublic        bool   `json:"is_public,omitempty"`
-	TargetService   string `json:"target_service,omitempty"`
-	TargetNamespace string `json:"target_namespace,omitempty"`
+	Port              int    `json:"port"`
+	Name              string `json:"name,omitempty"`
+	TargetDeviceID    string `json:"target_device_id"`
+	ToPeerDeviceID    string `json:"to_peer_device_id,omitempty"`
+	ExternalPort      int    `json:"external_port,omitempty"`
+	Protocol          string `json:"protocol,omitempty"`
+	IsPublic          bool   `json:"is_public,omitempty"`
+	TargetService     string `json:"target_service,omitempty"`
+	TargetNamespace   string `json:"target_namespace,omitempty"`
+	BasicAuthUser     string `json:"basic_auth_user,omitempty"`
+	BasicAuthPassword string `json:"basic_auth_password,omitempty"`
 }
 
 // CreateTunnel creates a new tunnel exposing a device port.

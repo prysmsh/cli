@@ -57,6 +57,7 @@ func newTunnelExposeCommand() *cobra.Command {
 		namespace         string
 		scheme            string
 		insecureUpstream  bool
+		basicAuth         string
 	)
 
 	cmd := &cobra.Command{
@@ -87,6 +88,25 @@ Press Ctrl+C to stop when running in foreground.`,
 			scheme = strings.ToLower(strings.TrimSpace(scheme))
 			if scheme != "http" && scheme != "https" {
 				return fmt.Errorf("--scheme must be http or https (got %q)", scheme)
+			}
+
+			// Allow the env-var handoff for the daemon respawn so creds
+			// aren't visible in `ps`.
+			if basicAuth == "" {
+				basicAuth = os.Getenv("PRYSM_TUNNEL_BASIC_AUTH")
+			}
+
+			var basicAuthUser, basicAuthPass string
+			if s := strings.TrimSpace(basicAuth); s != "" {
+				idx := strings.Index(s, ":")
+				if idx <= 0 || idx == len(s)-1 {
+					return errors.New("--basic-auth must be in user:pass form with non-empty user and pass")
+				}
+				basicAuthUser = s[:idx]
+				basicAuthPass = s[idx+1:]
+				if !public {
+					return errors.New("--basic-auth only applies to --public tunnels")
+				}
 			}
 
 			if strings.TrimSpace(clusterRef) != "" {
@@ -145,9 +165,11 @@ Press Ctrl+C to stop when running in foreground.`,
 				return nil
 			}
 
-			// When --background, spawn a detached child and exit
+			// When --background, spawn a detached child and exit. Basic-auth
+			// credentials are passed through an env var so they don't appear
+			// in the child's argv (visible via `ps`).
 			if background && os.Getenv("PRYSM_TUNNEL_DAEMON") == "" {
-				return runTunnelExposeBackground(port, name, toPeer, externalPort, public, verbose, scheme, insecureUpstream)
+				return runTunnelExposeBackground(port, name, toPeer, externalPort, public, verbose, scheme, insecureUpstream, basicAuth)
 			}
 
 			app := MustApp()
@@ -333,13 +355,15 @@ Press Ctrl+C to stop when running in foreground.`,
 				defer createCancel()
 				var createErr error
 				tunnel, createErr = app.API.CreateTunnel(createCtx, api.TunnelCreateRequest{
-					Port:           port,
-					Name:           strings.TrimSpace(name),
-					TargetDeviceID: deviceID,
-					ToPeerDeviceID: strings.TrimSpace(toPeer),
-					ExternalPort:   externalPort,
-					Protocol:       "tcp",
-					IsPublic:       public,
+					Port:              port,
+					Name:              strings.TrimSpace(name),
+					TargetDeviceID:    deviceID,
+					ToPeerDeviceID:    strings.TrimSpace(toPeer),
+					ExternalPort:      externalPort,
+					Protocol:          "tcp",
+					IsPublic:          public,
+					BasicAuthUser:     basicAuthUser,
+					BasicAuthPassword: basicAuthPass,
 				})
 				return createErr
 			}); err != nil {
@@ -358,6 +382,9 @@ Press Ctrl+C to stop when running in foreground.`,
 			fmt.Printf("  Status:      %s\n", tunnel.Status)
 			if tunnel.ToPeerDeviceID != "" {
 				fmt.Printf("  Restricted:  %s\n", tunnel.ToPeerDeviceID)
+			}
+			if basicAuthUser != "" {
+				fmt.Printf("  Auth:        basic (user=%s)\n", basicAuthUser)
 			}
 			fmt.Println()
 			if os.Getenv("PRYSM_TUNNEL_DAEMON") != "" {
@@ -423,12 +450,13 @@ Press Ctrl+C to stop when running in foreground.`,
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "verbose tunnel traffic logging")
 	cmd.Flags().StringVar(&scheme, "scheme", "http", "upstream scheme: http or https")
 	cmd.Flags().BoolVar(&insecureUpstream, "insecure-upstream", true, "skip TLS verification for https upstream (default true for localhost dev)")
+	cmd.Flags().StringVar(&basicAuth, "basic-auth", "", "gate the public URL with HTTP basic auth in user:pass form (only meaningful with --public)")
 
 	return cmd
 }
 
 // runTunnelExposeBackground spawns a detached child process running tunnel expose.
-func runTunnelExposeBackground(port int, name, toPeer string, externalPort int, public, verbose bool, scheme string, insecureUpstream bool) error {
+func runTunnelExposeBackground(port int, name, toPeer string, externalPort int, public, verbose bool, scheme string, insecureUpstream bool, basicAuth string) error {
 	homeDir, err := config.DefaultHomeDir()
 	if err != nil {
 		return fmt.Errorf("config dir: %w", err)
@@ -468,7 +496,11 @@ func runTunnelExposeBackground(port int, name, toPeer string, externalPort int, 
 	}
 
 	child := exec.Command(os.Args[0], args...)
-	child.Env = append(os.Environ(), "PRYSM_TUNNEL_DAEMON=1")
+	env := append(os.Environ(), "PRYSM_TUNNEL_DAEMON=1")
+	if basicAuth != "" {
+		env = append(env, "PRYSM_TUNNEL_BASIC_AUTH="+basicAuth)
+	}
+	child.Env = env
 	child.Stdin = nil
 	child.Stdout = logFile
 	child.Stderr = logFile
