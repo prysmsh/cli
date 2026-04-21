@@ -342,6 +342,15 @@ func runMeshConnectViaDaemon() error {
 	if resp.Error != "" {
 		return fmt.Errorf("meshd: %s", resp.Error)
 	}
+	if resp.Status != "connected" || resp.OverlayIP == "" {
+		// Daemon accepted the request but the lifecycle failed (e.g. expired token).
+		// Query status for more detail.
+		st, _ := meshd.GetStatus()
+		if st != nil && st.Status == "disconnected" {
+			return fmt.Errorf("daemon failed to connect — check `prysm daemon status` and re-login if your session expired")
+		}
+		return fmt.Errorf("daemon returned status %q with no overlay IP — check /var/log/prysm/meshd.log", resp.Status)
+	}
 	fmt.Println(style.Success.Render(fmt.Sprintf("Mesh connected via daemon (%s on %s)", resp.OverlayIP, resp.Interface)))
 	fmt.Println(style.MutedStyle.Render("Daemon manages the tunnel — this CLI can exit safely."))
 

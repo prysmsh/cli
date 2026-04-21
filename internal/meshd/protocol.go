@@ -17,6 +17,8 @@ type Response struct {
 	Interface string    `json:"interface,omitempty"`
 	PeerCount int       `json:"peer_count,omitempty"`
 	Uptime    int64     `json:"uptime,omitempty"`     // seconds
+	TxBytes   int64     `json:"tx_bytes,omitempty"`
+	RxBytes   int64     `json:"rx_bytes,omitempty"`
 	Error     string    `json:"error,omitempty"`
 	WGConfig  *WGConfig `json:"wg_config,omitempty"`  // returned by "wg_config" command
 }

@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 
 	"golang.zx2c4.com/wireguard/conn"
 )
@@ -44,6 +45,10 @@ type DERPBind struct {
 	aliasMu   sync.RWMutex
 	peerAlias map[string]string // relay ID → configured endpoint ID
 	knownEPs  map[string]bool   // configured endpoint IDs we've sent to
+
+	// Traffic counters.
+	txBytes atomic.Int64
+	rxBytes atomic.Int64
 }
 
 type derpPacket struct {
@@ -112,6 +117,7 @@ func (b *DERPBind) Send(bufs [][]byte, ep conn.Endpoint) error {
 		if len(buf) == 0 {
 			continue
 		}
+		b.txBytes.Add(int64(len(buf)))
 		_ = b.sender.SendWGPacket(peerID, buf)
 	}
 	return nil
@@ -131,6 +137,7 @@ func (b *DERPBind) DeliverPacket(peerID string, data []byte) {
 	if closed {
 		return
 	}
+	b.rxBytes.Add(int64(len(data)))
 	// The DERP relay rewrites "from" to the sender's relay-assigned ID,
 	// which differs from the endpoint we configured (e.g. "cluster_3").
 	// Map it back so wireguard-go can match the response to the peer.
@@ -152,6 +159,11 @@ func (b *DERPBind) DeliverPacket(peerID string, data []byte) {
 	case b.inbound <- derpPacket{data: data, peerID: peerID}:
 	default:
 	}
+}
+
+// TrafficStats returns cumulative tx/rx byte counts.
+func (b *DERPBind) TrafficStats() (tx, rx int64) {
+	return b.txBytes.Load(), b.rxBytes.Load()
 }
 
 // EncodeWGPacket encodes a WireGuard packet for DERP JSON transport.

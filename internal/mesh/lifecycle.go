@@ -34,6 +34,8 @@ type Status struct {
 	Interface string    `json:"interface"`
 	PeerCount int       `json:"peer_count"`
 	StartedAt time.Time `json:"started_at"`
+	TxBytes   int64     `json:"tx_bytes"`
+	RxBytes   int64     `json:"rx_bytes"`
 }
 
 // Lifecycle owns the DERP client, WireGuard tunnel, and keepalive ping loop.
@@ -213,7 +215,11 @@ func (l *Lifecycle) Stop() {
 func (l *Lifecycle) GetStatus() Status {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
-	return l.status
+	st := l.status
+	if l.wgBind != nil {
+		st.TxBytes, st.RxBytes = l.wgBind.TrafficStats()
+	}
+	return st
 }
 
 // RefreshToken updates the auth token on both the API client and stored config.

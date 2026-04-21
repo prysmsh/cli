@@ -135,27 +135,46 @@ func (s *Server) handleConnect(ctx context.Context, req Request) Response {
 	s.lifecycle = lc
 	s.running = true
 
+	// Channel signals when lifecycle exits early (e.g. auth failure).
+	exited := make(chan error, 1)
 	go func() {
-		if err := lc.Start(ctx); err != nil {
+		err := lc.Start(ctx)
+		if err != nil {
 			s.logger.Printf("lifecycle exited: %v", err)
 		}
 		s.mu.Lock()
 		s.running = false
 		s.lifecycle = nil
 		s.mu.Unlock()
+		exited <- err
 	}()
 
-	// Give the lifecycle a moment to connect before returning status.
-	time.Sleep(2 * time.Second)
+	// Wait for lifecycle to connect or fail.
+	select {
+	case err := <-exited:
+		// Lifecycle exited before connecting.
+		msg := "lifecycle failed"
+		if err != nil {
+			msg = err.Error()
+		}
+		return Response{Status: "error", Error: msg}
+	case <-time.After(5 * time.Second):
+		// Still running — return current status.
+	}
 
 	st := lc.GetStatus()
-	return Response{
+	resp := Response{
 		Status:    st.State,
 		OverlayIP: st.OverlayIP,
 		Interface: st.Interface,
 		PeerCount: st.PeerCount,
-		Uptime:    int64(time.Since(st.StartedAt).Seconds()),
+		TxBytes:   st.TxBytes,
+		RxBytes:   st.RxBytes,
 	}
+	if !st.StartedAt.IsZero() {
+		resp.Uptime = int64(time.Since(st.StartedAt).Seconds())
+	}
+	return resp
 }
 
 func (s *Server) handleDisconnect() Response {
@@ -181,13 +200,18 @@ func (s *Server) handleStatus() Response {
 	}
 
 	st := s.lifecycle.GetStatus()
-	return Response{
+	resp := Response{
 		Status:    st.State,
 		OverlayIP: st.OverlayIP,
 		Interface: st.Interface,
 		PeerCount: st.PeerCount,
-		Uptime:    int64(time.Since(st.StartedAt).Seconds()),
+		TxBytes:   st.TxBytes,
+		RxBytes:   st.RxBytes,
 	}
+	if !st.StartedAt.IsZero() {
+		resp.Uptime = int64(time.Since(st.StartedAt).Seconds())
+	}
+	return resp
 }
 
 func (s *Server) handleRefreshToken(req Request) Response {

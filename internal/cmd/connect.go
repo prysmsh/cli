@@ -487,11 +487,10 @@ func newConnectSSHCommand() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&reason, "reason", "", "required justification for audit and policy evaluation")
+	cmd.Flags().StringVar(&reason, "reason", "", "justification for audit and policy evaluation")
 	cmd.Flags().StringVar(&requestID, "request-id", "", "link this SSH session to an approved access request ID")
 	cmd.Flags().IntVar(&port, "port", 0, "override SSH port")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "evaluate policy and print the ssh command without executing it")
-	_ = cmd.MarkFlagRequired("reason")
 
 	return cmd
 }
