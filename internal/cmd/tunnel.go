@@ -38,6 +38,8 @@ func newTunnelCommand() *cobra.Command {
 		newTunnelListCommand(),
 		newTunnelDeleteCommand(),
 		newTunnelDiagnoseCommand(),
+		newTunnelStatusCommand(),
+		newTunnelLogsCommand(),
 	)
 
 	return tunnelCmd
@@ -371,6 +373,15 @@ Press Ctrl+C to stop when running in foreground.`,
 				return err
 			}
 
+			// Daemon-only: record the tunnel ID so `prysm tunnel status` can
+			// correlate this PID with the backend row. Best-effort — a failure
+			// here only breaks status UX, not the tunnel itself.
+			if os.Getenv("PRYSM_TUNNEL_DAEMON") != "" {
+				if err := updateDaemonTunnelID(app.Config.HomeDir, port, tunnel.ID); err != nil {
+					logTunnel("[tunnel] daemon record update failed: %v\n", err)
+				}
+			}
+
 			// 3. Print tunnel info
 			fmt.Println()
 			fmt.Println(style.Success.Copy().Bold(true).Render(fmt.Sprintf("Tunnel active: localhost:%d", port)))
@@ -421,18 +432,26 @@ Press Ctrl+C to stop when running in foreground.`,
 			defer signal.Stop(sigCh)
 
 			// 4. Wait for signal or error, then clean up
+			cleanupDaemonRec := func() {
+				if os.Getenv("PRYSM_TUNNEL_DAEMON") != "" {
+					_ = deleteDaemonRecord(app.Config.HomeDir, port)
+				}
+			}
 			select {
 			case <-ctx.Done():
 				cleanupTunnel(app, tunnel.ID)
+				cleanupDaemonRec()
 				return ctx.Err()
 			case sig := <-sigCh:
 				fmt.Println(style.Warning.Render(fmt.Sprintf("\nReceived %s, cleaning up tunnel...", sig)))
 				derpClient.Close()
 				cleanupTunnel(app, tunnel.ID)
+				cleanupDaemonRec()
 				return nil
 			case runErr := <-errCh:
 				derpClient.Close()
 				cleanupTunnel(app, tunnel.ID)
+				cleanupDaemonRec()
 				return runErr
 			}
 		},
@@ -465,7 +484,7 @@ func runTunnelExposeBackground(port int, name, toPeer string, externalPort int, 
 	if err := os.MkdirAll(logDir, 0o700); err != nil {
 		return fmt.Errorf("create log dir: %w", err)
 	}
-	logPath := filepath.Join(logDir, "tunnel.log")
+	logPath := daemonLogPath(homeDir, port)
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return fmt.Errorf("open log file: %w", err)
@@ -513,14 +532,24 @@ func runTunnelExposeBackground(port int, name, toPeer string, externalPort int, 
 		return fmt.Errorf("start tunnel: %w", err)
 	}
 
-	pidPath := filepath.Join(homeDir, fmt.Sprintf("tunnel-%d.pid", port))
-	_ = os.MkdirAll(filepath.Dir(pidPath), 0o700)
-	_ = os.WriteFile(pidPath, []byte(fmt.Sprintf("%d\n", child.Process.Pid)), 0o600)
+	// Tunnel ID is 0 at spawn; the child fills it in after CreateTunnel
+	// succeeds. `prysm tunnel status` treats a missing tunnel_id as "still
+	// coming up" until the child updates the file.
+	rec := daemonRecord{
+		PID:       child.Process.Pid,
+		Port:      port,
+		StartedAt: time.Now().UTC(),
+		LogPath:   logPath,
+	}
+	if err := writeDaemonRecord(homeDir, rec); err != nil {
+		fmt.Fprintf(os.Stderr, "%s\n", style.Warning.Render(fmt.Sprintf("could not write daemon record: %v", err)))
+	}
 
 	fmt.Println()
 	fmt.Println(style.Success.Copy().Bold(true).Render(fmt.Sprintf("Tunnel running in background (PID: %d)", child.Process.Pid)))
-	fmt.Println(style.MutedStyle.Render(fmt.Sprintf("  Log: %s", logPath)))
-	fmt.Println(style.MutedStyle.Render(fmt.Sprintf("  Stop: kill %d  or  prysm tunnel delete <id>", child.Process.Pid)))
+	fmt.Println(style.MutedStyle.Render(fmt.Sprintf("  Log:    %s", logPath)))
+	fmt.Println(style.MutedStyle.Render("  Status: prysm tunnel status"))
+	fmt.Println(style.MutedStyle.Render(fmt.Sprintf("  Stop:   kill %d  or  prysm tunnel delete <id>", child.Process.Pid)))
 	fmt.Println()
 
 	return nil
