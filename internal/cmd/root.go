@@ -72,6 +72,7 @@ var commandGroup = map[string]string{
 	"ssh":        "Infrastructure",
 	"tunnel":     "Infrastructure",
 	"mesh":       "Infrastructure",
+	"ping":       "Infrastructure",
 	"credential": "Infrastructure",
 	"docker":     "Infrastructure",
 	"security":   "Security",
@@ -106,7 +107,7 @@ var menuGroupOrder = []string{
 // Lower values appear first. Commands not listed default to 50.
 var menuOrder = map[string]int{
 	"login": 1, "install": 2, "connect": 3,
-	"clusters": 1, "hosts": 2, "ssh": 3, "tunnel": 4, "mesh": 5, "credential": 6, "docker": 7,
+	"clusters": 1, "hosts": 2, "ssh": 3, "tunnel": 4, "mesh": 5, "ping": 6, "credential": 7, "docker": 8,
 	"security": 1, "vault": 2, "audit": 3, "sessions": 4, "honeypots": 5,
 	"session": 1, "request": 2, "logout": 3, "team": 4, "profile": 5,
 	"ai": 1, "diagnose": 2, "status": 3, "update": 4, "plugin": 5, "completion": 6,
@@ -136,6 +137,7 @@ var menuShortDesc = map[string]string{
 	"diagnose":   "Run network and access diagnostics",
 	"status":     "System health check",
 	"hosts":      "Manage standalone hosts",
+	"ping":       "Ping a host over WireGuard mesh",
 	"install":    "Install agent on a remote host via SSH",
 	"update":     "Update the CLI",
 	"plugin":     "Manage CLI plugins",
@@ -190,6 +192,10 @@ func init() {
 	}
 
 	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error {
+		// The daemon run command operates without user config or $HOME.
+		if cmd.Name() == "run" && cmd.Parent() != nil && cmd.Parent().Name() == "daemon" {
+			return nil
+		}
 		return initApp(cmd)
 	}
 
@@ -234,11 +240,13 @@ func init() {
 		newPluginCommand(),
 		newDockerCommand(),
 		newHostsCommand(),
+		newPingCommand(),
 		newInstallCommand(),
 		newUpdateCommand(),
 		newTeamCommand(),
 		newProfileCommand(),
 		newLogFilterCommand(),
+		newDaemonCommand(),
 	)
 
 	// Register exit plugin commands under "mesh exit" (use, off, status).

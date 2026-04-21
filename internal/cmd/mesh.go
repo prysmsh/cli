@@ -154,6 +154,10 @@ func newMeshConnectCommand() *cobra.Command {
 		Use:   "connect",
 		Short: "Join the DERP mesh network and stream peer updates",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Delegate to daemon if it's running (no sudo, no background fork).
+			if meshd.IsRunning() {
+				return runMeshConnectViaDaemon()
+			}
 			if foreground {
 				return runMeshConnect(cmd)
 			}
@@ -310,6 +314,42 @@ func newMeshDoctorCommand() *cobra.Command {
 	return cmd
 }
 
+func runMeshConnectViaDaemon() error {
+	app := MustApp()
+	sess, err := app.Sessions.Load()
+	if err != nil {
+		return err
+	}
+	if sess == nil {
+		return fmt.Errorf("no active session; run `prysm login`")
+	}
+	deviceID, err := derp.EnsureDeviceID(app.Config.HomeDir)
+	if err != nil {
+		return err
+	}
+	relay := app.Config.DERPServerURL
+	if relay == "" {
+		relay = sess.DERPServerURL
+	}
+	apiURL := app.Config.APIBaseURL
+
+	resp, err := meshd.Connect(
+		sess.Token, apiURL, relay, deviceID, app.Config.HomeDir,
+	)
+	if err != nil {
+		return fmt.Errorf("meshd connect: %w", err)
+	}
+	if resp.Error != "" {
+		return fmt.Errorf("meshd: %s", resp.Error)
+	}
+	fmt.Println(style.Success.Render(fmt.Sprintf("Mesh connected via daemon (%s on %s)", resp.OverlayIP, resp.Interface)))
+	fmt.Println(style.MutedStyle.Render("Daemon manages the tunnel — this CLI can exit safely."))
+
+	// Launch tray app if installed and not already running.
+	launchTrayApp()
+	return nil
+}
+
 func runMeshConnectBackground(cmd *cobra.Command) error {
 	if pid, running := readDerpPidAndCheckRunning(); running {
 		fmt.Println(style.Warning.Render(fmt.Sprintf("DERP mesh already connected (PID %d).", pid)))
@@ -381,40 +421,6 @@ func runMeshConnect(cmd *cobra.Command) error {
 		return fmt.Errorf("write DERP pidfile: %w", err)
 	}
 	defer removeDerpPidfile(home)
-
-	// Check if prysm-meshd daemon is running — delegate to it (no sudo needed).
-	if meshd.IsRunning() {
-		app := MustApp()
-		sess, err := app.Sessions.Load()
-		if err != nil {
-			return err
-		}
-		if sess == nil {
-			return fmt.Errorf("no active session; run `prysm login`")
-		}
-		deviceID, err := derp.EnsureDeviceID(app.Config.HomeDir)
-		if err != nil {
-			return err
-		}
-		relay := app.Config.DERPServerURL
-		if relay == "" {
-			relay = sess.DERPServerURL
-		}
-		apiURL := app.Config.APIBaseURL
-
-		resp, err := meshd.Connect(
-			sess.Token, apiURL, relay, deviceID, app.Config.HomeDir,
-		)
-		if err != nil {
-			return fmt.Errorf("meshd connect: %w", err)
-		}
-		if resp.Error != "" {
-			return fmt.Errorf("meshd: %s", resp.Error)
-		}
-		fmt.Println(style.Success.Render(fmt.Sprintf("Mesh connected via daemon (%s on %s)", resp.OverlayIP, resp.Interface)))
-		fmt.Println(style.MutedStyle.Render("Daemon manages the tunnel — this CLI can exit safely."))
-		return nil
-	}
 
 	app := MustApp()
 	sess, err := app.Sessions.Load()
@@ -548,6 +554,18 @@ func runMeshConnect(cmd *cobra.Command) error {
 				bind.DeliverPacket(fromPeerID, packet)
 			}
 			fmt.Println(style.Success.Render(fmt.Sprintf("WireGuard tunnel active (%s on %s) via DERP", wgTunnel.OverlayIP(), wgTunnel.InterfaceName())))
+		}
+	}
+	// After DERP connects, re-trigger WG handshake for peers that were added
+	// before the DERP WebSocket was live.
+	if wgTunnel != nil {
+		derpClient.OnConnected = func() {
+			time.Sleep(500 * time.Millisecond)
+			for _, p := range wgTunnel.Peers() {
+				if err := wgTunnel.RetriggerHandshake(p); err != nil {
+					fmt.Fprintf(os.Stderr, "wireguard: retrigger handshake %s: %v\n", p.PublicKey[:8], err)
+				}
+			}
 		}
 	}
 

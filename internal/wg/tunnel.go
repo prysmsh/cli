@@ -38,8 +38,8 @@ type Tunnel struct {
 // EnsureKeyPair creates or loads a WireGuard key pair stored under homeDir.
 // Returns the private key and the base64-encoded public key.
 func EnsureKeyPair(homeDir string) (privKey wgtypes.Key, pubKeyB64 string, err error) {
-	privKeyPath := filepath.Join(homeDir, "wg-prysm.key")
-	pubKeyFile := filepath.Join(homeDir, "wg-prysm.pub")
+	privKeyPath := filepath.Join(homeDir, "prysm0.key")
+	pubKeyFile := filepath.Join(homeDir, "prysm0.pub")
 
 	// Try loading existing key pair.
 	if data, readErr := os.ReadFile(privKeyPath); readErr == nil {
@@ -248,9 +248,11 @@ func (t *Tunnel) addPeerDERP(p PeerConfig) error {
 		uapi.WriteString(fmt.Sprintf("allowed_ip=%s\n", cidr))
 	}
 
+	fmt.Fprintf(os.Stderr, "wireguard: IpcSet for peer %s:\n%s\n", truncateKey(p.PublicKey), uapi.String())
 	if err := t.wgDevice.IpcSet(uapi.String()); err != nil {
 		return fmt.Errorf("configure peer %s: %w", truncateKey(p.PublicKey), err)
 	}
+	fmt.Fprintf(os.Stderr, "wireguard: peer %s configured OK\n", truncateKey(p.PublicKey))
 
 	for _, cidr := range p.AllowedIPs {
 		if out, err := exec.Command("route", "-n", "add", "-net", cidr, "-interface", t.interfaceName).CombinedOutput(); err != nil {
@@ -366,6 +368,27 @@ func (t *Tunnel) GetPeers() []PeerConfig {
 // PrivateKeyBase64 returns the private key in base64 encoding (for NE config).
 func (t *Tunnel) PrivateKeyBase64() string {
 	return t.privateKey.String()
+}
+
+// Peers returns the configured peer list.
+func (t *Tunnel) Peers() []PeerConfig {
+	return t.peers
+}
+
+// RetriggerHandshake forces wireguard-go to re-initiate a handshake with a peer
+// by re-setting the endpoint. This does NOT close the bind.
+func (t *Tunnel) RetriggerHandshake(p PeerConfig) error {
+	pubKey, err := wgtypes.ParseKey(p.PublicKey)
+	if err != nil {
+		return err
+	}
+	var uapi strings.Builder
+	uapi.WriteString(fmt.Sprintf("public_key=%s\n", hexKey(pubKey)))
+	if p.Endpoint != "" {
+		uapi.WriteString(fmt.Sprintf("endpoint=%s\n", p.Endpoint))
+	}
+	uapi.WriteString(fmt.Sprintf("persistent_keepalive_interval=%d\n", 25))
+	return t.wgDevice.IpcSet(uapi.String())
 }
 
 func (t *Tunnel) IsRunning() bool {

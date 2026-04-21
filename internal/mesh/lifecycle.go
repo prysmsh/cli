@@ -134,6 +134,14 @@ func (l *Lifecycle) Start(ctx context.Context) error {
 			derpClient.WGPacketHandler = func(fromPeerID string, packet []byte) {
 				bind.DeliverPacket(fromPeerID, packet)
 			}
+			derpClient.OnConnected = func() {
+				time.Sleep(500 * time.Millisecond)
+				for _, p := range tun.Peers() {
+					if err := tun.RetriggerHandshake(p); err != nil {
+						l.logger.Printf("retrigger handshake %s: %v", p.PublicKey[:8], err)
+					}
+				}
+			}
 			l.logger.Printf("WireGuard tunnel active (%s on %s) via DERP", tun.OverlayIP(), tun.InterfaceName())
 		}
 	}

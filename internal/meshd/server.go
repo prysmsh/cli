@@ -51,7 +51,7 @@ func (s *Server) Serve(ctx context.Context) error {
 	}
 	s.listener = ln
 
-	if err := os.Chmod(s.socketPath, 0660); err != nil {
+	if err := os.Chmod(s.socketPath, 0666); err != nil {
 		ln.Close()
 		return fmt.Errorf("chmod socket: %w", err)
 	}
@@ -128,6 +128,7 @@ func (s *Server) handleConnect(ctx context.Context, req Request) Response {
 		DERPURL:   req.DERPURL,
 		DeviceID:  req.DeviceID,
 		HomeDir:   req.HomeDir,
+		WireGuard: true,
 	}
 
 	lc := mesh.New(cfg)

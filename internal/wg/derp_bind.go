@@ -2,7 +2,6 @@ package wg
 
 import (
 	"encoding/base64"
-	"fmt"
 	"net"
 	"net/netip"
 	"sync"
@@ -39,6 +38,12 @@ type DERPBind struct {
 	// wireguard-go's receive goroutine pulls from here.
 	inbound chan derpPacket
 	done    chan struct{}
+
+	// The DERP relay rewrites "from" to relay-assigned IDs.
+	// We track known relay→endpoint mappings to match responses.
+	aliasMu   sync.RWMutex
+	peerAlias map[string]string // relay ID → configured endpoint ID
+	knownEPs  map[string]bool   // configured endpoint IDs we've sent to
 }
 
 type derpPacket struct {
@@ -49,13 +54,22 @@ type derpPacket struct {
 // NewDERPBind creates a conn.Bind that transports WireGuard packets over DERP.
 func NewDERPBind(sender DERPSender) *DERPBind {
 	return &DERPBind{
-		sender:  sender,
-		inbound: make(chan derpPacket, 256),
-		done:    make(chan struct{}),
+		sender:    sender,
+		inbound:   make(chan derpPacket, 256),
+		done:      make(chan struct{}),
+		peerAlias: make(map[string]string),
+		knownEPs:  make(map[string]bool),
 	}
 }
 
 func (b *DERPBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
+	b.mu.Lock()
+	// Reset state — wireguard-go calls Close() then Open() during reconfiguration.
+	b.closed = false
+	b.inbound = make(chan derpPacket, 256)
+	b.done = make(chan struct{})
+	b.mu.Unlock()
+
 	recv := func(packets [][]byte, sizes []int, eps []conn.Endpoint) (int, error) {
 		select {
 		case pkt, ok := <-b.inbound:
@@ -89,13 +103,16 @@ func (b *DERPBind) SetMark(mark uint32) error { return nil }
 
 func (b *DERPBind) Send(bufs [][]byte, ep conn.Endpoint) error {
 	peerID := ep.DstToString()
+	// Track this as a known configured endpoint
+	b.aliasMu.Lock()
+	b.knownEPs[peerID] = true
+	b.aliasMu.Unlock()
+
 	for _, buf := range bufs {
 		if len(buf) == 0 {
 			continue
 		}
-		if err := b.sender.SendWGPacket(peerID, buf); err != nil {
-			return fmt.Errorf("derp send to %s: %w", peerID, err)
-		}
+		_ = b.sender.SendWGPacket(peerID, buf)
 	}
 	return nil
 }
@@ -114,10 +131,26 @@ func (b *DERPBind) DeliverPacket(peerID string, data []byte) {
 	if closed {
 		return
 	}
+	// The DERP relay rewrites "from" to the sender's relay-assigned ID,
+	// which differs from the endpoint we configured (e.g. "cluster_3").
+	// Map it back so wireguard-go can match the response to the peer.
+	b.aliasMu.Lock()
+	if mapped, ok := b.peerAlias[peerID]; ok {
+		peerID = mapped
+	} else if !b.knownEPs[peerID] {
+		// Unknown relay ID — auto-learn by mapping to a known endpoint.
+		// Pick the first configured endpoint (covers single-peer case).
+		for ep := range b.knownEPs {
+			b.peerAlias[peerID] = ep
+			peerID = ep
+			break
+		}
+	}
+	b.aliasMu.Unlock()
+
 	select {
 	case b.inbound <- derpPacket{data: data, peerID: peerID}:
 	default:
-		// Drop packet if queue is full — WireGuard handles retransmission.
 	}
 }
 
