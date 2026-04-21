@@ -25,6 +25,17 @@ import (
 
 const oauthCallbackPort = 4208
 
+// printLoginWelcome prints the post-login success banner plus a short
+// "what now" hint pointing at the core expose flow. The goal is to cut the
+// dead zone between authentication and the first meaningful action.
+func printLoginWelcome(name, email string) {
+	fmt.Println(style.Success.Render(fmt.Sprintf("Login successful — welcome, %s (%s)", name, email)))
+	fmt.Println()
+	fmt.Println(style.MutedStyle.Render("  Try it:    prysm tunnel expose 8080 --public"))
+	fmt.Println(style.MutedStyle.Render("  Docs:      prysm --help"))
+	fmt.Println()
+}
+
 // isSSHSession returns true when the process is running inside an SSH session
 // (SSH_CONNECTION or SSH_CLIENT are set by sshd). Used to auto-select device-code
 // flow when no browser is available.
@@ -151,7 +162,7 @@ func runPasswordLogin(ctx context.Context, app *App, email, password string) err
 		return err
 	}
 
-	fmt.Println(style.Success.Render(fmt.Sprintf("Login successful — welcome, %s (%s)", loginResp.User.Name, loginResp.User.Email)))
+	printLoginWelcome(loginResp.User.Name, loginResp.User.Email)
 	return nil
 }
 
@@ -343,7 +354,7 @@ func runOAuthLogin(ctx context.Context, app *App, provider string) error {
 	if err := app.Sessions.Save(sess); err != nil {
 		return err
 	}
-	fmt.Println(style.Success.Render(fmt.Sprintf("Login successful — welcome, %s (%s)", profile.User.Name, profile.User.Email)))
+	printLoginWelcome(profile.User.Name, profile.User.Email)
 	return nil
 }
 
@@ -440,7 +451,7 @@ func runDeviceCodeLogin(ctx context.Context, app *App) error {
 					if err := app.Sessions.Save(sess); err != nil {
 						return err
 					}
-					fmt.Println(style.Success.Render(fmt.Sprintf("Login successful — welcome, %s (%s)", profile.User.Name, profile.User.Email)))
+					printLoginWelcome(profile.User.Name, profile.User.Email)
 					return nil
 
 				case "authorization_pending":
