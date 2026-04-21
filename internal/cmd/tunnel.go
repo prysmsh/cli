@@ -45,16 +45,18 @@ func newTunnelCommand() *cobra.Command {
 
 func newTunnelExposeCommand() *cobra.Command {
 	var (
-		port         int
-		name         string
-		toPeer       string
-		externalPort int
-		public       bool
-		background   bool
-		verbose      bool
-		clusterRef   string
-		service      string
-		namespace    string
+		port              int
+		name              string
+		toPeer            string
+		externalPort      int
+		public            bool
+		background        bool
+		verbose           bool
+		clusterRef        string
+		service           string
+		namespace         string
+		scheme            string
+		insecureUpstream  bool
 	)
 
 	cmd := &cobra.Command{
@@ -80,6 +82,11 @@ Press Ctrl+C to stop when running in foreground.`,
 			}
 			if port <= 0 || port > 65535 {
 				return errors.New("port is required (e.g. prysm tunnel expose 8080 or -p 8080)")
+			}
+
+			scheme = strings.ToLower(strings.TrimSpace(scheme))
+			if scheme != "http" && scheme != "https" {
+				return fmt.Errorf("--scheme must be http or https (got %q)", scheme)
 			}
 
 			if strings.TrimSpace(clusterRef) != "" {
@@ -140,7 +147,7 @@ Press Ctrl+C to stop when running in foreground.`,
 
 			// When --background, spawn a detached child and exit
 			if background && os.Getenv("PRYSM_TUNNEL_DAEMON") == "" {
-				return runTunnelExposeBackground(port, name, toPeer, externalPort, public, verbose)
+				return runTunnelExposeBackground(port, name, toPeer, externalPort, public, verbose, scheme, insecureUpstream)
 			}
 
 			app := MustApp()
@@ -237,13 +244,13 @@ Press Ctrl+C to stop when running in foreground.`,
 				}
 				// route_setup: dial localhost:<targetPort> and start forwarding
 				addr := fmt.Sprintf("127.0.0.1:%d", targetPort)
-				logTunnel("[tunnel] route_setup route=%s dialing %s\n", routeID, addr)
-				conn, dialErr := net.Dial("tcp", addr)
+				logTunnel("[tunnel] route_setup route=%s dialing %s (scheme=%s)\n", routeID, addr, scheme)
+				conn, dialErr := dialUpstream(addr, scheme, insecureUpstream)
 				if dialErr != nil {
 					fmt.Fprintf(os.Stderr, "%s\n", style.Error.Render(fmt.Sprintf("tunnel dial %s: %v", addr, dialErr)))
 					return
 				}
-				logTunnel("[tunnel] connected to %s\n", addr)
+				logTunnel("[tunnel] connected to %s (scheme=%s)\n", addr, scheme)
 				routeConnsMu.Lock()
 				routeConns[routeID] = conn
 				routeConnsMu.Unlock()
@@ -414,12 +421,14 @@ Press Ctrl+C to stop when running in foreground.`,
 	cmd.Flags().StringVar(&namespace, "namespace", "default", "Kubernetes service namespace (default: default)")
 	cmd.Flags().BoolVarP(&background, "background", "b", false, "run in background (detached)")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "verbose tunnel traffic logging")
+	cmd.Flags().StringVar(&scheme, "scheme", "http", "upstream scheme: http or https")
+	cmd.Flags().BoolVar(&insecureUpstream, "insecure-upstream", true, "skip TLS verification for https upstream (default true for localhost dev)")
 
 	return cmd
 }
 
 // runTunnelExposeBackground spawns a detached child process running tunnel expose.
-func runTunnelExposeBackground(port int, name, toPeer string, externalPort int, public, verbose bool) error {
+func runTunnelExposeBackground(port int, name, toPeer string, externalPort int, public, verbose bool, scheme string, insecureUpstream bool) error {
 	homeDir, err := config.DefaultHomeDir()
 	if err != nil {
 		return fmt.Errorf("config dir: %w", err)
@@ -450,6 +459,12 @@ func runTunnelExposeBackground(port int, name, toPeer string, externalPort int, 
 	}
 	if verbose {
 		args = append(args, "--verbose")
+	}
+	if scheme != "" && scheme != "http" {
+		args = append(args, "--scheme", scheme)
+	}
+	if !insecureUpstream {
+		args = append(args, "--insecure-upstream=false")
 	}
 
 	child := exec.Command(os.Args[0], args...)

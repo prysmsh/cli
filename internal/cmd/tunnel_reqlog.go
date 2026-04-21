@@ -2,13 +2,42 @@ package cmd
 
 import (
 	"bytes"
+	"crypto/tls"
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/prysmsh/cli/internal/style"
 )
+
+// dialUpstream opens a TCP connection to the local service the tunnel exposes.
+// When scheme is "https" the connection is upgraded to TLS before forwarding,
+// so the tunnel can front local HTTPS-only dev servers (Next.js with
+// --experimental-https, Vite with HTTPS, mkcert-backed services, etc.).
+// insecureSkipVerify defaults to true for `scheme=https` because localhost
+// certs are almost never in a public trust store — set it to false if you've
+// imported the root CA system-wide.
+func dialUpstream(addr, scheme string, insecureSkipVerify bool) (net.Conn, error) {
+	tcp, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	if scheme != "https" {
+		return tcp, nil
+	}
+	cfg := &tls.Config{
+		ServerName:         "localhost",
+		InsecureSkipVerify: insecureSkipVerify,
+	}
+	tlsConn := tls.Client(tcp, cfg)
+	if err := tlsConn.Handshake(); err != nil {
+		tcp.Close()
+		return nil, fmt.Errorf("tls handshake: %w", err)
+	}
+	return tlsConn, nil
+}
 
 // parseHTTPRequestLine extracts METHOD and PATH from the first line of what
 // looks like an HTTP/1.x request. Returns ok=false for non-HTTP data.
