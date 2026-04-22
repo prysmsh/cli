@@ -137,13 +137,9 @@ func (t *Tunnel) Start() error {
 	}
 
 	// Assign IP address and bring interface up (macOS ifconfig — always available).
-	if out, err := exec.Command("ifconfig", t.interfaceName, "inet", t.overlayIP+"/32", t.overlayIP).CombinedOutput(); err != nil {
+	if err := configureInterface(t.interfaceName, t.overlayIP); err != nil {
 		wgDev.Close()
-		return fmt.Errorf("ifconfig inet: %s: %w", strings.TrimSpace(string(out)), err)
-	}
-	if out, err := exec.Command("ifconfig", t.interfaceName, "up").CombinedOutput(); err != nil {
-		wgDev.Close()
-		return fmt.Errorf("ifconfig up: %s: %w", strings.TrimSpace(string(out)), err)
+		return fmt.Errorf("configure interface: %w", err)
 	}
 
 	// Add initial peers.
@@ -208,13 +204,9 @@ func (t *Tunnel) StartWithDERPBind(bind *DERPBind) error {
 		return fmt.Errorf("bring up wireguard device: %w", err)
 	}
 
-	if out, err := exec.Command("ifconfig", t.interfaceName, "inet", t.overlayIP+"/32", t.overlayIP).CombinedOutput(); err != nil {
+	if err := configureInterface(t.interfaceName, t.overlayIP); err != nil {
 		wgDev.Close()
-		return fmt.Errorf("ifconfig inet: %s: %w", strings.TrimSpace(string(out)), err)
-	}
-	if out, err := exec.Command("ifconfig", t.interfaceName, "up").CombinedOutput(); err != nil {
-		wgDev.Close()
-		return fmt.Errorf("ifconfig up: %s: %w", strings.TrimSpace(string(out)), err)
+		return fmt.Errorf("configure interface: %w", err)
 	}
 
 	for _, p := range t.peers {
@@ -255,8 +247,8 @@ func (t *Tunnel) addPeerDERP(p PeerConfig) error {
 	fmt.Fprintf(os.Stderr, "wireguard: peer %s configured OK\n", truncateKey(p.PublicKey))
 
 	for _, cidr := range p.AllowedIPs {
-		if out, err := exec.Command("route", "-n", "add", "-net", cidr, "-interface", t.interfaceName).CombinedOutput(); err != nil {
-			return fmt.Errorf("route add %s: %s: %w", cidr, strings.TrimSpace(string(out)), err)
+		if err := addRoute(cidr, t.interfaceName); err != nil {
+			return fmt.Errorf("route: %w", err)
 		}
 	}
 
@@ -323,8 +315,8 @@ func (t *Tunnel) addPeer(p PeerConfig) error {
 	}
 
 	for _, cidr := range p.AllowedIPs {
-		if out, err := exec.Command("route", "-n", "add", "-net", cidr, "-interface", t.interfaceName).CombinedOutput(); err != nil {
-			return fmt.Errorf("route add %s: %s: %w", cidr, strings.TrimSpace(string(out)), err)
+		if err := addRoute(cidr, t.interfaceName); err != nil {
+			return fmt.Errorf("route: %w", err)
 		}
 	}
 

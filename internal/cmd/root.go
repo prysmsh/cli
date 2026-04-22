@@ -24,9 +24,6 @@ import (
 	"github.com/prysmsh/cli/internal/session"
 	"github.com/prysmsh/cli/internal/style"
 	exitplugin "github.com/prysmsh/cli/plugins/exit"
-	"github.com/prysmsh/cli/plugins/onboard"
-	"github.com/prysmsh/cli/plugins/status"
-	vaultplugin "github.com/prysmsh/cli/plugins/vault"
 )
 
 var (
@@ -41,7 +38,6 @@ var (
 	cfgFile        string
 	activeProfile  string
 	overrideAPI    string
-	overrideComp   string
 	overrideDERP   string
 	overrideFormat string
 	overrideHost   string
@@ -52,11 +48,8 @@ var (
 
 	appOnce       sync.Once
 	app           *App
-	pluginMgr     *plugin.Manager
-	onboardPlugin *onboard.OnboardPlugin
-	statusPlugin  *status.StatusPlugin
-	exitPlugin    *exitplugin.ExitPlugin
-	vaultPlugin   *vaultplugin.VaultPlugin
+	pluginMgr  *plugin.Manager
+	exitPlugin *exitplugin.ExitPlugin
 )
 
 var version = "dev"
@@ -65,30 +58,13 @@ var version = "dev"
 // Commands not in the map are listed under "Other".
 var commandGroup = map[string]string{
 	"login":      "Get started",
-	"install":    "Get started",
-	"connect":    "Get started",
-	"hosts":      "Infrastructure",
-	"clusters":   "Infrastructure",
-	"ssh":        "Infrastructure",
-	"tunnel":     "Infrastructure",
-	"mesh":       "Infrastructure",
-	"ping":       "Infrastructure",
-	"credential": "Infrastructure",
-	"docker":     "Infrastructure",
-	"security":   "Security",
-	"vault":      "Security",
-	"audit":      "Security",
-	"honeypots":  "Security",
-	"sessions":   "Security",
+	"tunnel":     "Networking",
+	"mesh":       "Networking",
+	"ping":       "Networking",
 	"session":    "Account",
-	"request":    "Account",
 	"logout":     "Account",
-	"team":       "Account",
-	"profile":    "Account",
-	"ai":         "Tools",
-	"status":     "Tools",
 	"diagnose":   "Tools",
-	"plugin":     "Tools",
+	"daemon":     "Tools",
 	"update":     "Tools",
 	"completion": "Tools",
 }
@@ -96,8 +72,7 @@ var commandGroup = map[string]string{
 // menuGroupOrder is the display order of groups on the default menu.
 var menuGroupOrder = []string{
 	"Get started",
-	"Infrastructure",
-	"Security",
+	"Networking",
 	"Account",
 	"Tools",
 	"Other",
@@ -106,41 +81,23 @@ var menuGroupOrder = []string{
 // menuOrder controls the display order of commands within each group.
 // Lower values appear first. Commands not listed default to 50.
 var menuOrder = map[string]int{
-	"login": 1, "install": 2, "connect": 3,
-	"clusters": 1, "hosts": 2, "ssh": 3, "tunnel": 4, "mesh": 5, "ping": 6, "credential": 7, "docker": 8,
-	"security": 1, "vault": 2, "audit": 3, "sessions": 4, "honeypots": 5,
-	"session": 1, "request": 2, "logout": 3, "team": 4, "profile": 5,
-	"ai": 1, "diagnose": 2, "status": 3, "update": 4, "plugin": 5, "completion": 6,
+	"login": 1,
+	"tunnel": 1, "mesh": 2, "ping": 3,
+	"session": 1, "logout": 2,
+	"diagnose": 1, "daemon": 2, "update": 3, "completion": 4,
 }
 
 // menuShortDesc overrides command.Short for the default help menu to keep it tight.
 var menuShortDesc = map[string]string{
 	"login":      "Sign in to Prysm",
-	"connect":    "Get kubeconfig for a cluster",
-	"clusters":   "List, onboard, and manage clusters",
-	"ssh":        "Open policy-checked SSH access",
 	"tunnel":     "Create secure TCP tunnels",
 	"mesh":       "Join the DERP mesh network",
-	"credential": "Emit credentials for kubectl",
-	"docker":     "Configure Docker contexts",
-	"security":   "Security events and compliance",
-	"vault":      "Embedded secrets engine",
-	"audit":      "Audit logs and compliance reports",
-	"sessions":   "List and replay access sessions",
-	"honeypots":  "Manage honeypot tokens",
+	"ping":       "Ping a host over mesh",
 	"session":    "Show current session",
-	"request":    "Create and review access requests",
 	"logout":     "Sign out and purge credentials",
-	"team":       "Manage team members",
-	"profile":    "View and update your profile",
-	"ai":         "AI assistant, agents, and embeddings",
-	"diagnose":   "Run network and access diagnostics",
-	"status":     "System health check",
-	"hosts":      "Manage standalone hosts",
-	"ping":       "Ping a host over WireGuard mesh",
-	"install":    "Install agent on a remote host via SSH",
+	"diagnose":   "Run network diagnostics",
+	"daemon":     "Manage mesh daemon",
 	"update":     "Update the CLI",
-	"plugin":     "Manage CLI plugins",
 	"completion": "Generate shell completions",
 }
 
@@ -207,7 +164,6 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&overrideAPI, "api-url", "", "override API base URL")
 	rootCmd.PersistentFlags().StringVar(&overrideHost, "api-host", "", "override Host header when connecting to the API")
 	rootCmd.PersistentFlags().StringVar(&overrideDial, "api-connect", "", "override network address when connecting to the API (e.g. 127.0.0.1:8444)")
-	rootCmd.PersistentFlags().StringVar(&overrideComp, "compliance-url", "", "override compliance API URL")
 	rootCmd.PersistentFlags().StringVar(&overrideDERP, "derp-url", "", "override DERP relay URL")
 	rootCmd.PersistentFlags().StringVar(&overrideFormat, "format", "", "set default output format")
 	rootCmd.PersistentFlags().StringVar(&overrideToken, "token", "", "authentication token (overrides session; can also use PRYSM_TOKEN env var)")
@@ -216,7 +172,6 @@ func init() {
 
 	_ = viper.BindPFlag("debug", rootCmd.PersistentFlags().Lookup("debug"))
 
-	clustersCmd := newClustersCommand()
 	meshCmd := newMeshCommand()
 
 	rootCmd.AddCommand(
@@ -224,28 +179,11 @@ func init() {
 		newLoginCommand(),
 		newLogoutCommand(),
 		newSessionCommand(),
-		newRequestCommand(),
-		newSessionsCommand(),
-		newConnectCommand(),
-		newSSHCommand(),
-		newCredentialCommand(),
 		meshCmd,
 		newTunnelCommand(),
 		newDiagnoseCommand(),
-		newAuditCommand(),
-		newAICommand(),
-		clustersCmd,
-		newSecurityCommand(),
-		newHoneypotsCommand(),
-		newPluginCommand(),
-		newDockerCommand(),
-		newHostsCommand(),
 		newPingCommand(),
-		newInstallCommand(),
 		newUpdateCommand(),
-		newTeamCommand(),
-		newProfileCommand(),
-		newLogFilterCommand(),
 		newDaemonCommand(),
 	)
 
@@ -262,31 +200,6 @@ func init() {
 		for _, spec := range exitPlugin.Manifest().Commands {
 			meshExitCmd.AddCommand(plugin.BuildCobraCommand(spec, exitPlugin, pluginRequestOptions()))
 		}
-	}
-
-	// Register builtin plugin commands eagerly so Cobra can route them.
-	// Host services are set later in initPluginManager (PersistentPreRunE).
-	onboardPlugin = onboard.New(nil)
-	manifest := onboardPlugin.Manifest()
-
-	// Add onboard subcommands directly under "clusters" (primary path: prysm clusters onboard kube).
-	for _, spec := range manifest.Commands {
-		clustersCmd.AddCommand(plugin.BuildCobraCommand(spec, onboardPlugin, pluginRequestOptions()))
-	}
-
-	// Keep top-level "prysm onboard" as a hidden alias for backwards compatibility.
-	for _, spec := range manifest.Commands {
-		aliasCmd := plugin.BuildCobraCommand(spec, onboardPlugin, pluginRequestOptions())
-		aliasCmd.Hidden = true
-		rootCmd.AddCommand(aliasCmd)
-	}
-	statusPlugin = status.New(nil)
-	for _, spec := range statusPlugin.Manifest().Commands {
-		rootCmd.AddCommand(plugin.BuildCobraCommand(spec, statusPlugin, pluginRequestOptions()))
-	}
-	vaultPlugin = vaultplugin.New(nil)
-	for _, spec := range vaultPlugin.Manifest().Commands {
-		rootCmd.AddCommand(plugin.BuildCobraCommand(spec, vaultPlugin, pluginRequestOptions()))
 	}
 
 	rootCmd.SetHelpFunc(styledRootHelpFunc)
@@ -413,7 +326,7 @@ func styledRootHelpFunc(cmd *cobra.Command, args []string) {
 	// Footer hints
 	hintCol := 24
 	fmt.Fprintf(out, "  %-*s %s\n", hintCol, style.HintKey.Render("prysm login"), style.MutedStyle.Render("Sign in to get started"))
-	fmt.Fprintf(out, "  %-*s %s\n", hintCol, style.HintKey.Render("prysm ssh onboard"), style.MutedStyle.Render("Onboard an SSH host"))
+	fmt.Fprintf(out, "  %-*s %s\n", hintCol, style.HintKey.Render("prysm tunnel expose 8080"), style.MutedStyle.Render("Expose a local port publicly"))
 	fmt.Fprintf(out, "  %-*s %s\n", hintCol, style.HintKey.Render("prysm <cmd> --help"), style.MutedStyle.Render("Details for any command"))
 	fmt.Fprintln(out)
 }
@@ -604,9 +517,6 @@ func initApp(cmd *cobra.Command) error {
 		if overrideAPI != "" {
 			cfg.APIBaseURL = strings.TrimRight(overrideAPI, "/")
 		}
-		if overrideComp != "" {
-			cfg.ComplianceURL = strings.TrimRight(overrideComp, "/")
-		}
 		if overrideDERP != "" {
 			cfg.DERPServerURL = strings.TrimRight(overrideDERP, "/")
 		}
@@ -791,16 +701,9 @@ func initPluginManager() {
 	hostSvc := plugin.NewBuiltinHostServices(appCtx)
 
 	// Wire host services into the eagerly-created builtin plugins.
-	onboardPlugin.SetHost(hostSvc)
-	statusPlugin.SetHost(hostSvc)
 	exitPlugin.SetHost(hostSvc)
-	vaultPlugin.SetHost(hostSvc)
 
 	pluginMgr = plugin.NewManager(hostSvc, app.Config.HomeDir, app.Debug)
-	pluginMgr.RegisterBuiltin("onboard", onboardPlugin)
-	pluginMgr.RegisterBuiltin("status", statusPlugin)
-	pluginMgr.RegisterBuiltin("exit", exitPlugin)
-	pluginMgr.RegisterBuiltin("vault", vaultPlugin)
 
 	// Discover and register external plugins
 	pluginMgr.DiscoverExternalPlugins()
