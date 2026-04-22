@@ -208,6 +208,13 @@ func (s *Server) handleStatus() Response {
 		TxBytes:   st.TxBytes,
 		RxBytes:   st.RxBytes,
 	}
+	for _, p := range st.Peers {
+		resp.Peers = append(resp.Peers, PeerInfo{
+			Name:      p.Name,
+			OverlayIP: p.OverlayIP,
+			Endpoint:  p.Endpoint,
+		})
+	}
 	if !st.StartedAt.IsZero() {
 		resp.Uptime = int64(time.Since(st.StartedAt).Seconds())
 	}

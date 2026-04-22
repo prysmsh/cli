@@ -28,14 +28,22 @@ type Config struct {
 }
 
 // Status represents the current state of the mesh lifecycle.
+// PeerStatus describes a WG peer for status display.
+type PeerStatus struct {
+	Name      string
+	OverlayIP string
+	Endpoint  string
+}
+
 type Status struct {
-	State     string    `json:"state"`
-	OverlayIP string    `json:"overlay_ip"`
-	Interface string    `json:"interface"`
-	PeerCount int       `json:"peer_count"`
-	StartedAt time.Time `json:"started_at"`
-	TxBytes   int64     `json:"tx_bytes"`
-	RxBytes   int64     `json:"rx_bytes"`
+	State     string       `json:"state"`
+	OverlayIP string       `json:"overlay_ip"`
+	Interface string       `json:"interface"`
+	PeerCount int          `json:"peer_count"`
+	Peers     []PeerStatus `json:"peers"`
+	StartedAt time.Time    `json:"started_at"`
+	TxBytes   int64        `json:"tx_bytes"`
+	RxBytes   int64        `json:"rx_bytes"`
 }
 
 // Lifecycle owns the DERP client, WireGuard tunnel, and keepalive ping loop.
@@ -157,6 +165,7 @@ func (l *Lifecycle) Start(ctx context.Context) error {
 	if l.wgTunnel != nil {
 		l.status.OverlayIP = l.wgTunnel.OverlayIP()
 		l.status.Interface = l.wgTunnel.InterfaceName()
+		l.status.PeerCount = len(l.wgTunnel.Peers())
 	}
 	l.mu.Unlock()
 
@@ -218,6 +227,20 @@ func (l *Lifecycle) GetStatus() Status {
 	st := l.status
 	if l.wgBind != nil {
 		st.TxBytes, st.RxBytes = l.wgBind.TrafficStats()
+	}
+	if l.wgTunnel != nil {
+		for _, p := range l.wgTunnel.Peers() {
+			ip := ""
+			if len(p.AllowedIPs) > 0 {
+				ip = strings.TrimSuffix(p.AllowedIPs[0], "/32")
+			}
+			st.Peers = append(st.Peers, PeerStatus{
+				Name:      p.Endpoint,
+				OverlayIP: ip,
+				Endpoint:  p.Endpoint,
+			})
+		}
+		st.PeerCount = len(st.Peers)
 	}
 	return st
 }

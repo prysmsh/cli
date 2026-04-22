@@ -121,6 +121,9 @@ func runDaemonStatus(cmd *cobra.Command, args []string) error {
 	}
 	if resp.PeerCount > 0 {
 		fmt.Printf("Peers:     %d\n", resp.PeerCount)
+		for _, p := range resp.Peers {
+			fmt.Printf("  %s  %s\n", p.OverlayIP, p.Name)
+		}
 	}
 	if resp.Uptime > 0 {
 		fmt.Printf("Uptime:    %ds\n", resp.Uptime)
