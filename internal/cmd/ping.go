@@ -52,19 +52,17 @@ func newPingCommand() *cobra.Command {
 
 // resolveClusterOverlayIP finds a cluster by name and returns its WireGuard overlay CIDR host address.
 func resolveClusterOverlayIP(ctx context.Context, app *App, name string) (string, error) {
-	clusters, err := fetchClusterList(ctx, app)
+	clusters, err := app.API.ListClusters(ctx)
+	if err != nil {
+		return "", fmt.Errorf("list clusters: %w", err)
+	}
+
+	cluster, err := findCluster(clusters, name)
 	if err != nil {
 		return "", err
 	}
 
-	nameLower := strings.ToLower(name)
-	for _, c := range clusters {
-		if strings.ToLower(c.Name) == nameLower || c.PublicID == name {
-			return resolveClusterNodeIP(ctx, app, c.ID, c.PublicID)
-		}
-	}
-
-	return "", fmt.Errorf("cluster %q not found", name)
+	return resolveClusterNodeIP(ctx, app, uint(cluster.ID), fmt.Sprintf("%d", cluster.ID))
 }
 
 // resolveClusterNodeIP finds the WireGuard overlay address for a cluster via mesh nodes.

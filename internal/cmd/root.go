@@ -29,7 +29,7 @@ import (
 var (
 	rootCmd = &cobra.Command{
 		Use:              "prysm",
-		Short:            "Prysm zero-trust infrastructure access CLI",
+		Short:            "Prysm secure tunnels CLI",
 		SilenceUsage:     true,
 		SilenceErrors:    true,
 		TraverseChildren: true,
@@ -296,7 +296,7 @@ func styledRootHelpFunc(cmd *cobra.Command, args []string) {
 
 	// Default menu (no -h): welcome header, grouped commands, footer hints.
 	header := style.Title.Render("Prysm") + "\n" +
-		style.Tagline.Render("Zero-trust infrastructure access") + "  " +
+		style.Tagline.Render("Secure tunnels") + "  " +
 		style.MutedStyle.Render("v"+version)
 	fmt.Fprintln(out, style.WelcomeBox.Render(header))
 
