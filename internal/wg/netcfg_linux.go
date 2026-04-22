@@ -13,6 +13,10 @@ func configureInterface(ifaceName, overlayIP string) error {
 	if out, err := exec.Command("ip", "link", "set", ifaceName, "up").CombinedOutput(); err != nil {
 		return fmt.Errorf("ip link set up: %s: %w", strings.TrimSpace(string(out)), err)
 	}
+	// Allow overlay traffic through Tailscale's iptables rules (non-fatal).
+	if exec.Command("iptables", "-C", "ts-input", "-i", ifaceName, "-j", "ACCEPT").Run() != nil {
+		_ = exec.Command("iptables", "-I", "ts-input", "3", "-i", ifaceName, "-j", "ACCEPT").Run()
+	}
 	return nil
 }
 

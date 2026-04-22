@@ -368,19 +368,18 @@ func (t *Tunnel) Peers() []PeerConfig {
 }
 
 // RetriggerHandshake forces wireguard-go to re-initiate a handshake with a peer
-// by re-setting the endpoint. This does NOT close the bind.
+// by removing and re-adding it via UAPI. This does NOT close the bind.
 func (t *Tunnel) RetriggerHandshake(p PeerConfig) error {
 	pubKey, err := wgtypes.ParseKey(p.PublicKey)
 	if err != nil {
 		return err
 	}
-	var uapi strings.Builder
-	uapi.WriteString(fmt.Sprintf("public_key=%s\n", hexKey(pubKey)))
-	if p.Endpoint != "" {
-		uapi.WriteString(fmt.Sprintf("endpoint=%s\n", p.Endpoint))
-	}
-	uapi.WriteString(fmt.Sprintf("persistent_keepalive_interval=%d\n", 25))
-	return t.wgDevice.IpcSet(uapi.String())
+	// Remove peer to reset handshake state.
+	removeUAPI := fmt.Sprintf("public_key=%s\nremove=true\n", hexKey(pubKey))
+	_ = t.wgDevice.IpcSet(removeUAPI)
+
+	// Re-add with full config.
+	return t.addPeerDERP(p)
 }
 
 func (t *Tunnel) IsRunning() bool {
