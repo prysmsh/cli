@@ -502,21 +502,24 @@ const oauthSuccessPage = `<!DOCTYPE html>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
 display:flex;align-items:center;justify-content:center;min-height:100vh;
-background:#0f0f13;color:#e4e4e7}
+background:#09090b;color:#fafafa}
 .card{text-align:center;padding:3rem 2.5rem;border-radius:16px;
-background:#18181b;border:1px solid #27272a;max-width:420px;width:90%}
-.icon{font-size:3rem;margin-bottom:1rem}
-h1{font-size:1.25rem;font-weight:600;margin-bottom:.5rem;color:#f4f4f5}
-p{color:#a1a1aa;font-size:.9rem;line-height:1.5}
-.brand{color:#818cf8;font-weight:600}
-.hint{margin-top:1.5rem;padding:.75rem 1rem;border-radius:8px;
-background:#1e1e24;font-family:"SF Mono",Menlo,monospace;font-size:.8rem;color:#71717a}
+background:rgba(24,24,27,0.6);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);
+border:1px solid rgba(255,255,255,0.08);max-width:420px;width:90%;
+box-shadow:0 25px 50px -12px rgba(0,0,0,0.5)}
+.icon{margin-bottom:1.25rem}
+.icon svg{width:48px;height:48px;color:#4ade80}
+h1{font-size:1.25rem;font-weight:600;margin-bottom:.5rem;color:#fafafa}
+p{color:#a1a1aa;font-size:.875rem;line-height:1.5}
+.hint{margin-top:1.5rem;padding:.75rem 1rem;border-radius:12px;
+background:rgba(255,255,255,0.04);font-family:"SF Mono",Menlo,Consolas,monospace;
+font-size:.8rem;color:#71717a;border:1px solid rgba(255,255,255,0.06)}
 </style>
 </head>
 <body>
 <div class="card">
-  <div class="icon">&#x2714;&#xFE0F;</div>
-  <h1>Signed in to <span class="brand">Prysm</span></h1>
+  <div class="icon"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg></div>
+  <h1>Signed in to Prysm</h1>
   <p>You can close this tab and return to your terminal.</p>
   <div class="hint">The CLI session is now active.</div>
 </div>
