@@ -30,10 +30,12 @@ const (
 	EventServiceDiscovery EventType = "service_discovery"
 	EventStatsUpdate      EventType = "stats_update"
 	EventPong             EventType = "pong"
+	EventPingResponse     EventType = "ping_response"
 	EventError            EventType = "error"
 	EventRouteSetup       EventType = "route_setup"
 	EventRouteResponse    EventType = "route_response"
 	EventTrafficData      EventType = "traffic_data"
+	EventWGPacket         EventType = "wg_packet"
 	EventUnknown          EventType = "unknown"
 )
 
@@ -45,6 +47,12 @@ type TunnelTrafficHandler func(routeID string, targetPort, externalPort int, dat
 // RouteResponseHandler is called when a route_response message is received.
 // routeID identifies the route; status is "ok" or an error string.
 type RouteResponseHandler func(routeID, status string)
+
+// WGPacketHandler is called when an encrypted WireGuard packet arrives via DERP relay.
+type WGPacketHandler func(fromPeerID string, packet []byte)
+
+// PingResponseHandler is called when a ping_response from a remote agent arrives.
+type PingResponseHandler func(data map[string]interface{})
 
 // Client manages a DERP websocket connection.
 type Client struct {
@@ -71,6 +79,15 @@ type Client struct {
 
 	// RouteResponseHandler is optional; when set, route_response events are forwarded.
 	RouteResponseHandler RouteResponseHandler
+
+	// WGPacketHandler is optional; when set, wg_packet events are forwarded.
+	WGPacketHandler WGPacketHandler
+
+	// PingResponseHandler is optional; when set, ping_response events are forwarded.
+	PingResponseHandler PingResponseHandler
+
+	// OnConnected is called after the DERP WebSocket connection is established.
+	OnConnected func()
 }
 
 // LogLevel controls verbosity.
@@ -145,6 +162,20 @@ func WithRouteResponseHandler(h RouteResponseHandler) Option {
 	}
 }
 
+// WithPingResponseHandler sets the callback for ping_response messages.
+func WithPingResponseHandler(h PingResponseHandler) Option {
+	return func(c *Client) {
+		c.PingResponseHandler = h
+	}
+}
+
+// WithWGPacketHandler sets the callback for incoming WireGuard packets relayed via DERP.
+func WithWGPacketHandler(h WGPacketHandler) Option {
+	return func(c *Client) {
+		c.WGPacketHandler = h
+	}
+}
+
 // NewClient constructs a DERP websocket client.
 func NewClient(url, deviceID string, opts ...Option) *Client {
 	tlsConfig := &tls.Config{}
@@ -200,6 +231,10 @@ func (c *Client) Run(ctx context.Context) error {
 	}
 	c.readyOnce.Do(func() { close(c.ready) })
 
+	if c.OnConnected != nil {
+		go c.OnConnected()
+	}
+
 	pingTicker := time.NewTicker(30 * time.Second)
 	heartbeatTicker := time.NewTicker(10 * time.Second)
 
@@ -212,10 +247,18 @@ func (c *Client) Run(ctx context.Context) error {
 				errCh <- ctx.Err()
 				return
 			default:
-				var message map[string]interface{}
-				if err := conn.ReadJSON(&message); err != nil {
+				msgType, data, err := conn.ReadMessage()
+				if err != nil {
 					errCh <- fmt.Errorf("read DERP message: %w", err)
 					return
+				}
+				if msgType == websocket.BinaryMessage {
+					c.handleBinaryMessage(data)
+					continue
+				}
+				var message map[string]interface{}
+				if err := json.Unmarshal(data, &message); err != nil {
+					continue
 				}
 				c.handleMessage(message)
 			}
@@ -323,6 +366,18 @@ func (c *Client) send(payload map[string]interface{}) error {
 	return nil
 }
 
+// SendWGPacket sends an encrypted WireGuard packet to a peer via the DERP relay.
+// Uses binary WebSocket frames for minimal overhead.
+func (c *Client) SendWGPacket(targetPeerID string, data []byte) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.conn == nil {
+		return errors.New("connection not established")
+	}
+	frame := EncodeBinaryWGPacket(c.deviceID, targetPeerID, data)
+	return c.conn.WriteMessage(websocket.BinaryMessage, frame)
+}
+
 // SendRouteRequest sends a route_request to create a tunnel route (source=this client, target=targetClient).
 // Returns the routeID for use with SendTrafficData.
 func (c *Client) SendRouteRequest(organizationID string, targetClient string, externalPort, targetPort int, protocol string) (string, error) {
@@ -384,6 +439,20 @@ func (c *Client) SendTrafficData(routeID string, data []byte) error {
 	})
 }
 
+// SendPingRequest sends a ping_request through the DERP relay to a remote agent.
+func (c *Client) SendPingRequest(organizationID, targetClient, requestID string) error {
+	return c.send(map[string]interface{}{
+		"type": "ping_request",
+		"from": c.deviceID,
+		"to":   "server",
+		"data": map[string]interface{}{
+			"target_client":   targetClient,
+			"organization_id": organizationID,
+			"request_id":      requestID,
+		},
+	})
+}
+
 func (c *Client) handleMessage(msg map[string]interface{}) {
 	eventType := EventType(getString(msg["type"]))
 
@@ -406,12 +475,19 @@ func (c *Client) handleMessage(msg map[string]interface{}) {
 		if c.logLevel == LogDebug {
 			c.log(style.MutedStyle.Render("< pong >"))
 		}
+	case EventPingResponse:
+		if c.PingResponseHandler != nil {
+			data, _ := msg["data"].(map[string]interface{})
+			c.PingResponseHandler(data)
+		}
 	case EventRouteSetup:
 		c.handleRouteSetup(msg)
 	case EventRouteResponse:
 		c.handleRouteResponse(msg)
 	case EventTrafficData:
 		c.handleTrafficData(msg)
+	case EventWGPacket:
+		c.handleWGPacket(msg)
 	case EventError:
 		code, detail := parseErrorPayload(msg["data"])
 		if detail != "" {
@@ -548,6 +624,55 @@ func (c *Client) handleTrafficData(msg map[string]interface{}) {
 	} else if c.logLevel == LogDebug {
 		c.log(style.MutedStyle.Render(fmt.Sprintf("traffic_data: route=%s len=%d", payload.RouteID, len(payload.Data))))
 	}
+}
+
+// handleBinaryMessage processes binary WebSocket frames (WG packets).
+func (c *Client) handleBinaryMessage(data []byte) {
+	if len(data) == 0 {
+		return
+	}
+	switch data[0] {
+	case BinaryFrameWGPacket:
+		if c.WGPacketHandler == nil {
+			return
+		}
+		from, _, payload, err := DecodeBinaryWGPacket(data)
+		if err != nil {
+			return
+		}
+		c.WGPacketHandler(from, payload)
+	}
+}
+
+func (c *Client) handleWGPacket(msg map[string]interface{}) {
+	if c.WGPacketHandler == nil {
+		return
+	}
+	fromPeer := getString(msg["from"])
+	data := msg["data"]
+	if data == nil {
+		return
+	}
+	var dataBytes []byte
+	switch v := data.(type) {
+	case string:
+		dataBytes = []byte(v)
+	case []byte:
+		dataBytes = v
+	default:
+		dataBytes, _ = json.Marshal(data)
+	}
+	var payload struct {
+		Packet string `json:"packet"`
+	}
+	if err := json.Unmarshal(dataBytes, &payload); err != nil {
+		return
+	}
+	pkt, err := base64.StdEncoding.DecodeString(payload.Packet)
+	if err != nil {
+		return
+	}
+	c.WGPacketHandler(fromPeer, pkt)
 }
 
 func getString(value interface{}) string {

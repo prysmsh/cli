@@ -60,7 +60,7 @@ type derpPacket struct {
 func NewDERPBind(sender DERPSender) *DERPBind {
 	return &DERPBind{
 		sender:    sender,
-		inbound:   make(chan derpPacket, 256),
+		inbound:   make(chan derpPacket, 1024),
 		done:      make(chan struct{}),
 		peerAlias: make(map[string]string),
 		knownEPs:  make(map[string]bool),
@@ -71,7 +71,7 @@ func (b *DERPBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 	b.mu.Lock()
 	// Reset state — wireguard-go calls Close() then Open() during reconfiguration.
 	b.closed = false
-	b.inbound = make(chan derpPacket, 256)
+	b.inbound = make(chan derpPacket, 1024)
 	b.done = make(chan struct{})
 	b.mu.Unlock()
 
