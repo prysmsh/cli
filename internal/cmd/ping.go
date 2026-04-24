@@ -17,7 +17,7 @@ import (
 func newPingCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "ping <host>",
-		Short: "Ping a cluster or overlay IP through the WireGuard mesh",
+		Short: "Ping a cluster, mesh peer, or overlay IP through the WireGuard mesh",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := MustApp()
@@ -28,7 +28,7 @@ func newPingCommand() *cobra.Command {
 
 			overlayIP := target
 			if net.ParseIP(target) == nil {
-				resolved, err := resolveClusterOverlayIP(ctx, app, target)
+				resolved, err := resolveOverlayIP(ctx, app, target)
 				if err != nil {
 					return err
 				}
@@ -84,6 +84,45 @@ func resolveClusterNodeIP(ctx context.Context, app *App, clusterID uint, cluster
 	}
 
 	return "", fmt.Errorf("no WireGuard address found for cluster %s — is the agent running?", clusterPublicID)
+}
+
+// resolveOverlayIP resolves a name to a WireGuard overlay IP by searching mesh nodes.
+// It matches against device IDs (with optional -cli suffix) and prefers connected nodes.
+func resolveOverlayIP(ctx context.Context, app *App, name string) (string, error) {
+	nodes, err := app.API.ListMeshNodes(ctx)
+	if err != nil {
+		return "", fmt.Errorf("list mesh nodes: %w", err)
+	}
+
+	lower := strings.ToLower(name)
+	// First pass: find a connected mesh peer matching the name.
+	for _, n := range nodes {
+		if n.WGAddress == "" || n.Status != "connected" {
+			continue
+		}
+		did := strings.ToLower(n.DeviceID)
+		if did == lower || did == lower+"-cli" {
+			return strings.Split(n.WGAddress, "/")[0], nil
+		}
+	}
+
+	// Try cluster lookup (matches cluster name, resolves via mesh nodes).
+	if resolved, err := resolveClusterOverlayIP(ctx, app, name); err == nil {
+		return resolved, nil
+	}
+
+	// Last resort: any mesh peer matching the name, even if disconnected.
+	for _, n := range nodes {
+		if n.WGAddress == "" {
+			continue
+		}
+		did := strings.ToLower(n.DeviceID)
+		if did == lower || did == lower+"-cli" {
+			return strings.Split(n.WGAddress, "/")[0], nil
+		}
+	}
+
+	return "", fmt.Errorf("no mesh peer or cluster found matching %q — check %s", name, style.Bold.Render("prysm mesh peers"))
 }
 
 // hasWireGuardInterface checks whether any WireGuard utun interface exists.
