@@ -61,6 +61,7 @@ var commandGroup = map[string]string{
 	"tunnel":     "Networking",
 	"mesh":       "Networking",
 	"ping":       "Networking",
+	"edge":       "Networking",
 	"session":    "Account",
 	"logout":     "Account",
 	"diagnose":   "Tools",
@@ -82,7 +83,7 @@ var menuGroupOrder = []string{
 // Lower values appear first. Commands not listed default to 50.
 var menuOrder = map[string]int{
 	"login": 1,
-	"tunnel": 1, "mesh": 2, "ping": 3,
+	"tunnel": 1, "mesh": 2, "ping": 3, "edge": 4,
 	"session": 1, "logout": 2,
 	"diagnose": 1, "daemon": 2, "update": 3, "completion": 4,
 }
@@ -92,6 +93,7 @@ var menuShortDesc = map[string]string{
 	"login":      "Sign in to Prysm",
 	"tunnel":     "Create secure TCP tunnels",
 	"mesh":       "Join the DERP mesh network",
+	"edge":       "Manage edge proxy domains and WAF rules",
 	"ping":       "Ping a host over mesh",
 	"session":    "Show current session",
 	"logout":     "Sign out and purge credentials",
@@ -185,6 +187,7 @@ func init() {
 		newPingCommand(),
 		newUpdateCommand(),
 		newDaemonCommand(),
+		newEdgeCommand(),
 	)
 
 	// Register exit plugin commands under "mesh exit" (use, off, status).
