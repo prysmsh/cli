@@ -34,9 +34,8 @@ func newEdgeCommand() *cobra.Command {
 }
 
 func newEdgeAddCommand() *cobra.Command {
-	var upstream string
-	var clusterRef string
-	var mode string
+	var origin string
+	var agentRef string
 
 	cmd := &cobra.Command{
 		Use:   "add <domain>",
@@ -48,20 +47,17 @@ func newEdgeAddCommand() *cobra.Command {
 			defer cancel()
 
 			domain := args[0]
-			if upstream == "" {
-				return fmt.Errorf("--upstream is required")
-			}
 
 			clusters, err := app.API.ListClusters(ctx)
 			if err != nil {
-				return fmt.Errorf("list clusters: %w", err)
+				return fmt.Errorf("list agents: %w", err)
 			}
-			cluster, err := findCluster(clusters, clusterRef)
+			cluster, err := findCluster(clusters, agentRef)
 			if err != nil {
-				return fmt.Errorf("resolve cluster: %w", err)
+				return fmt.Errorf("resolve agent: %w", err)
 			}
 
-			resp, err := app.API.CreateEdgeDomain(ctx, domain, upstream, uint(cluster.ID), mode)
+			resp, err := app.API.CreateEdgeDomain(ctx, domain, origin, uint(cluster.ID), "")
 			if err != nil {
 				return fmt.Errorf("create edge domain: %w", err)
 			}
@@ -75,11 +71,10 @@ func newEdgeAddCommand() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&upstream, "upstream", "", "upstream target (e.g. localhost:3000)")
-	cmd.Flags().StringVar(&clusterRef, "cluster", "", "cluster name or ID")
-	cmd.Flags().StringVar(&mode, "mode", "", "upstream mode: local or mesh (auto-detected if omitted)")
-	_ = cmd.MarkFlagRequired("upstream")
-	_ = cmd.MarkFlagRequired("cluster")
+	cmd.Flags().StringVar(&origin, "origin", "", "origin server (e.g. 127.0.0.1:3000)")
+	cmd.Flags().StringVar(&agentRef, "agent", "", "agent name or ID")
+	_ = cmd.MarkFlagRequired("origin")
+	_ = cmd.MarkFlagRequired("agent")
 	return cmd
 }
 
@@ -174,8 +169,9 @@ func newEdgeStatusCommand() *cobra.Command {
 
 func newEdgeUpstreamCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:   "upstream <domain> <host:port>",
-		Short: "Update upstream target for a domain",
+		Use:   "origin <domain> <host:port>",
+		Short: "Update origin server for a domain",
+		Aliases: []string{"upstream"},
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := MustApp()
@@ -188,10 +184,10 @@ func newEdgeUpstreamCommand() *cobra.Command {
 			}
 
 			if err := app.API.UpdateEdgeDomainUpstream(ctx, domain.ID, args[1]); err != nil {
-				return fmt.Errorf("update upstream: %w", err)
+				return fmt.Errorf("update origin: %w", err)
 			}
 
-			fmt.Fprintf(os.Stderr, "%s Upstream for %s updated to %s\n",
+			fmt.Fprintf(os.Stderr, "%s Origin for %s updated to %s\n",
 				style.Success.Render("ok:"), domain.Domain, args[1])
 			return nil
 		},
