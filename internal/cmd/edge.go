@@ -38,15 +38,19 @@ func newEdgeAddCommand() *cobra.Command {
 	var agentRef string
 
 	cmd := &cobra.Command{
-		Use:   "add <domain>",
+		Use:   "add [domain]",
 		Short: "Register a domain for edge proxy",
-		Args:  cobra.ExactArgs(1),
+		Long:  "Register a domain for edge proxy. If no domain is provided, a random .prysm.sh subdomain is minted automatically.",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := MustApp()
 			ctx, cancel := context.WithTimeout(cmd.Context(), 15*time.Second)
 			defer cancel()
 
-			domain := args[0]
+			domain := ""
+			if len(args) > 0 {
+				domain = args[0]
+			}
 
 			clusters, err := app.API.ListClusters(ctx)
 			if err != nil {
@@ -63,9 +67,13 @@ func newEdgeAddCommand() *cobra.Command {
 			}
 
 			fmt.Fprintf(os.Stderr, "%s Domain %s registered\n", style.Success.Render("ok:"), resp.Domain.Domain)
-			fmt.Fprintf(os.Stderr, "\nSet your NS records to:\n")
-			for _, ns := range resp.NSRecords {
-				fmt.Fprintf(os.Stderr, "  %s\n", ns)
+			if len(resp.NSRecords) > 0 {
+				fmt.Fprintf(os.Stderr, "\nSet your NS records to:\n")
+				for _, ns := range resp.NSRecords {
+					fmt.Fprintf(os.Stderr, "  %s\n", ns)
+				}
+			} else {
+				fmt.Fprintf(os.Stderr, "  Ready — no DNS configuration needed.\n")
 			}
 			return nil
 		},
