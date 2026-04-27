@@ -412,6 +412,8 @@ func runMeshConnectBackground(cmd *cobra.Command) error {
 	fmt.Println(style.MutedStyle.Render(fmt.Sprintf("Log: %s", logPath)))
 	fmt.Println(style.MutedStyle.Render(fmt.Sprintf("Stop: kill %d", child.Process.Pid)))
 	_ = child.Process.Release()
+
+	launchTrayApp()
 	return nil
 }
 
@@ -768,6 +770,8 @@ func runMeshConnect(cmd *cobra.Command) error {
 
 	fmt.Println(style.Success.Render(fmt.Sprintf("🔌 Joining DERP mesh as %s", deviceID)))
 	fmt.Println(style.MutedStyle.Render(fmt.Sprintf("Relay: %s", relay)))
+
+	launchTrayApp()
 
 	// Keepalive: ping backend every 60s so UI shows connected; when we stop, backend marks disconnected
 	pingTicker := time.NewTicker(60 * time.Second)

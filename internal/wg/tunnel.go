@@ -19,9 +19,10 @@ import (
 
 // PeerConfig defines a WireGuard peer.
 type PeerConfig struct {
-	PublicKey  string
-	Endpoint  string
-	AllowedIPs []string
+	PublicKey    string
+	Endpoint     string
+	AllowedIPs   []string
+	PresharedKey string // 32-byte hex PSK derived from ML-KEM (empty = no PSK)
 }
 
 // Tunnel manages an embedded userspace WireGuard interface.
@@ -229,6 +230,9 @@ func (t *Tunnel) addPeerDERP(p PeerConfig) error {
 
 	var uapi strings.Builder
 	uapi.WriteString(fmt.Sprintf("public_key=%s\n", hexKey(pubKey)))
+	if p.PresharedKey != "" {
+		uapi.WriteString(fmt.Sprintf("preshared_key=%s\n", p.PresharedKey))
+	}
 	// For DERP bind, the endpoint is the peer's device ID — DERPBind.ParseEndpoint
 	// creates a derpEndpoint from it.
 	if p.Endpoint != "" {
@@ -297,6 +301,9 @@ func (t *Tunnel) addPeer(p PeerConfig) error {
 
 	var uapi strings.Builder
 	uapi.WriteString(fmt.Sprintf("public_key=%s\n", hexKey(pubKey)))
+	if p.PresharedKey != "" {
+		uapi.WriteString(fmt.Sprintf("preshared_key=%s\n", p.PresharedKey))
+	}
 	if p.Endpoint != "" {
 		addr, resolveErr := resolveEndpoint(p.Endpoint)
 		if resolveErr != nil {

@@ -11,7 +11,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/prysmsh/cli/internal/config"
+	"github.com/prysmsh/cli/internal/derp"
 	"github.com/prysmsh/cli/internal/mesh"
+	"github.com/prysmsh/cli/internal/session"
 )
 
 // Server listens on a Unix socket and dispatches commands to a mesh.Lifecycle.
@@ -36,8 +39,13 @@ func NewServer(socketPath string) *Server {
 // connections until ctx is cancelled.
 func (s *Server) Serve(ctx context.Context) error {
 	dir := filepath.Dir(s.socketPath)
-	if err := os.MkdirAll(dir, 0750); err != nil {
+	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("create socket dir: %w", err)
+	}
+	// Ensure the directory is world-accessible so non-root processes
+	// (e.g. the tray app) can reach the socket inside.
+	if err := os.Chmod(dir, 0755); err != nil {
+		return fmt.Errorf("chmod socket dir: %w", err)
 	}
 
 	// Remove stale socket from a previous run.
@@ -122,12 +130,56 @@ func (s *Server) handleConnect(ctx context.Context, req Request) Response {
 		}
 	}
 
+	// Auto-load session if no token provided (tray app connect).
+	token := req.Token
+	apiURL := req.APIURL
+	derpURL := req.DERPURL
+	deviceID := req.DeviceID
+	homeDir := req.HomeDir
+
+	if token == "" && homeDir != "" {
+		store := session.NewStore(filepath.Join(homeDir, ".prysm", "session.json"))
+		if sess, err := store.Load(); err == nil && sess != nil {
+			token = sess.Token
+			if apiURL == "" {
+				apiURL = sess.APIBaseURL
+			}
+			if derpURL == "" {
+				derpURL = sess.DERPServerURL
+			}
+		}
+	}
+	if token == "" {
+		// Try default home dir.
+		if defHome, err := config.DefaultHomeDir(); err == nil {
+			store := session.NewStore(filepath.Join(defHome, "session.json"))
+			if sess, err := store.Load(); err == nil && sess != nil {
+				token = sess.Token
+				if apiURL == "" {
+					apiURL = sess.APIBaseURL
+				}
+				if derpURL == "" {
+					derpURL = sess.DERPServerURL
+				}
+				if homeDir == "" {
+					homeDir = defHome
+				}
+			}
+		}
+	}
+	if token == "" {
+		return Response{Status: "error", Error: "no session — run `prysm login` first"}
+	}
+	if deviceID == "" && homeDir != "" {
+		deviceID, _ = derp.EnsureDeviceID(homeDir)
+	}
+
 	cfg := mesh.Config{
-		AuthToken: req.Token,
-		APIURL:    req.APIURL,
-		DERPURL:   req.DERPURL,
-		DeviceID:  req.DeviceID,
-		HomeDir:   req.HomeDir,
+		AuthToken: token,
+		APIURL:    apiURL,
+		DERPURL:   derpURL,
+		DeviceID:  deviceID,
+		HomeDir:   homeDir,
 		WireGuard: true,
 	}
 
