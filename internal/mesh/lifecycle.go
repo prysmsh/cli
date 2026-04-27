@@ -72,9 +72,10 @@ func New(cfg Config) *Lifecycle {
 	}
 }
 
-// Start connects to the mesh: registers with the API, sets up DERP and
-// optionally WireGuard, then runs the keepalive loop. It blocks until the
-// context is cancelled, DERP errors out, or Stop is called.
+// Start connects to the mesh and runs with automatic reconnection.
+// It blocks until the context is cancelled or Stop is called.
+// Transient DERP disconnections (Cloudflare restarts, network blips)
+// are retried with exponential backoff.
 func (l *Lifecycle) Start(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	l.mu.Lock()
@@ -86,14 +87,52 @@ func (l *Lifecycle) Start(ctx context.Context) error {
 		cancel()
 	}()
 
-	// 1. API client
+	// API client persists across reconnects.
 	apiClient := api.NewClient(l.cfg.APIURL, api.WithInsecureSkipVerify(l.cfg.InsecureTLS))
 	apiClient.SetToken(l.cfg.AuthToken)
 	l.mu.Lock()
 	l.apiClient = apiClient
 	l.mu.Unlock()
 
-	// 2. Register mesh node
+	backoff := time.Second
+	const maxBackoff = 60 * time.Second
+
+	for {
+		err := l.runOnce(ctx, apiClient)
+		if err == nil || ctx.Err() != nil {
+			return err
+		}
+
+		// Auth errors are not transient — don't retry.
+		errMsg := err.Error()
+		if strings.Contains(errMsg, "401") || strings.Contains(errMsg, "Invalid token") ||
+			strings.Contains(errMsg, "authentication") || strings.Contains(errMsg, "Unauthorized") {
+			return err
+		}
+
+		l.mu.Lock()
+		l.status.State = "reconnecting"
+		l.mu.Unlock()
+
+		l.logger.Printf("disconnected: %v — reconnecting in %s", err, backoff)
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff):
+		}
+
+		backoff = backoff * 2
+		if backoff > maxBackoff {
+			backoff = maxBackoff
+		}
+	}
+}
+
+// runOnce executes a single DERP connection lifecycle. Returns when the
+// connection drops or the context is cancelled.
+func (l *Lifecycle) runOnce(ctx context.Context, apiClient *api.Client) error {
+	// Register mesh node
 	registerPayload := map[string]interface{}{
 		"device_id": l.cfg.DeviceID,
 		"peer_type": "client",
@@ -108,7 +147,7 @@ func (l *Lifecycle) Start(ctx context.Context) error {
 		return fmt.Errorf("register mesh node: %w", err)
 	}
 
-	// 3. Build DERP client
+	// Build DERP client
 	headers := make(http.Header)
 	headers.Set("Authorization", "Bearer "+l.cfg.AuthToken)
 	headers.Set("X-Session-ID", l.cfg.SessionID)
@@ -130,7 +169,19 @@ func (l *Lifecycle) Start(ctx context.Context) error {
 	l.derpClient = derpClient
 	l.mu.Unlock()
 
-	// 4. WireGuard tunnel (optional)
+	// Tear down previous WG tunnel before setting up a new one.
+	l.mu.Lock()
+	if l.wgBind != nil {
+		l.wgBind.Close()
+		l.wgBind = nil
+	}
+	if l.wgTunnel != nil {
+		_ = l.wgTunnel.Stop()
+		l.wgTunnel = nil
+	}
+	l.mu.Unlock()
+
+	// WireGuard tunnel (optional)
 	if l.cfg.WireGuard {
 		tun, bind, err := wg.SetupMeshWireGuardDERP(ctx, apiClient, l.cfg.HomeDir, l.cfg.DeviceID, derpClient)
 		if err != nil {
@@ -156,7 +207,7 @@ func (l *Lifecycle) Start(ctx context.Context) error {
 		}
 	}
 
-	// 5. Update status to connected
+	// Update status to connected
 	l.mu.Lock()
 	l.status = Status{
 		State:     "connected",
@@ -169,7 +220,7 @@ func (l *Lifecycle) Start(ctx context.Context) error {
 	}
 	l.mu.Unlock()
 
-	// 6. Keepalive ticker — ping backend every 60s
+	// Keepalive ticker — ping backend every 60s
 	pingTicker := time.NewTicker(60 * time.Second)
 	defer pingTicker.Stop()
 	go func() {
@@ -191,19 +242,8 @@ func (l *Lifecycle) Start(ctx context.Context) error {
 		}
 	}()
 
-	// 7. Run DERP client in goroutine
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- derpClient.Run(ctx)
-	}()
-
-	// 8. Block on context cancellation or DERP error
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case err := <-errCh:
-		return err
-	}
+	// Run DERP client — blocks until disconnect or context cancel
+	return derpClient.Run(ctx)
 }
 
 // Stop cancels the lifecycle context and waits for shutdown to complete.
