@@ -7,7 +7,9 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -59,9 +61,19 @@ func (s *Server) Serve(ctx context.Context) error {
 	}
 	s.listener = ln
 
-	if err := os.Chmod(s.socketPath, 0666); err != nil {
+	if err := os.Chmod(s.socketPath, 0660); err != nil {
 		ln.Close()
 		return fmt.Errorf("chmod socket: %w", err)
+	}
+	// Set socket group to the invoking user's primary group so non-root
+	// processes (tray app, CLI) can connect. On macOS this is typically "staff".
+	if sudoUID := os.Getenv("SUDO_UID"); sudoUID != "" {
+		if u, err := user.LookupId(sudoUID); err == nil {
+			if gid, err := strconv.Atoi(u.Gid); err == nil {
+				_ = os.Chown(s.socketPath, 0, gid)
+				_ = os.Chown(dir, 0, gid)
+			}
+		}
 	}
 
 	s.logger.Printf("listening on %s", s.socketPath)
