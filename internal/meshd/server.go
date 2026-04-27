@@ -144,6 +144,7 @@ func (s *Server) handleConnect(ctx context.Context, req Request) Response {
 
 	// Auto-load session if no token provided (tray app connect).
 	token := req.Token
+	var refreshToken string
 	apiURL := req.APIURL
 	derpURL := req.DERPURL
 	deviceID := req.DeviceID
@@ -153,6 +154,7 @@ func (s *Server) handleConnect(ctx context.Context, req Request) Response {
 		store := session.NewStore(filepath.Join(homeDir, ".prysm", "session.json"))
 		if sess, err := store.Load(); err == nil && sess != nil {
 			token = sess.Token
+			refreshToken = sess.RefreshToken
 			if apiURL == "" {
 				apiURL = sess.APIBaseURL
 			}
@@ -167,6 +169,7 @@ func (s *Server) handleConnect(ctx context.Context, req Request) Response {
 			store := session.NewStore(filepath.Join(defHome, "session.json"))
 			if sess, err := store.Load(); err == nil && sess != nil {
 				token = sess.Token
+				refreshToken = sess.RefreshToken
 				if apiURL == "" {
 					apiURL = sess.APIBaseURL
 				}
@@ -187,12 +190,13 @@ func (s *Server) handleConnect(ctx context.Context, req Request) Response {
 	}
 
 	cfg := mesh.Config{
-		AuthToken: token,
-		APIURL:    apiURL,
-		DERPURL:   derpURL,
-		DeviceID:  deviceID,
-		HomeDir:   homeDir,
-		WireGuard: true,
+		AuthToken:    token,
+		RefreshToken: refreshToken,
+		APIURL:       apiURL,
+		DERPURL:      derpURL,
+		DeviceID:     deviceID,
+		HomeDir:      homeDir,
+		WireGuard:    true,
 	}
 
 	lc := mesh.New(cfg)

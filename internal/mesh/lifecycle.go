@@ -16,15 +16,16 @@ import (
 
 // Config holds the parameters needed to run a mesh lifecycle.
 type Config struct {
-	AuthToken   string
-	SessionID   string
-	OrgID       string
-	APIURL      string
-	DERPURL     string
-	DeviceID    string
-	HomeDir     string
-	InsecureTLS bool
-	WireGuard   bool
+	AuthToken    string
+	RefreshToken string
+	SessionID    string
+	OrgID        string
+	APIURL       string
+	DERPURL      string
+	DeviceID     string
+	HomeDir      string
+	InsecureTLS  bool
+	WireGuard    bool
 }
 
 // Status represents the current state of the mesh lifecycle.
@@ -103,11 +104,31 @@ func (l *Lifecycle) Start(ctx context.Context) error {
 			return err
 		}
 
-		// Auth errors are not transient — don't retry.
+		// Auth errors: try refreshing the token before giving up.
 		errMsg := err.Error()
 		if strings.Contains(errMsg, "401") || strings.Contains(errMsg, "Invalid token") ||
 			strings.Contains(errMsg, "authentication") || strings.Contains(errMsg, "Unauthorized") {
-			return err
+			if l.cfg.RefreshToken == "" {
+				return err
+			}
+			l.logger.Printf("token expired, attempting refresh...")
+			refreshCtx, refreshCancel := context.WithTimeout(ctx, 10*time.Second)
+			resp, refreshErr := apiClient.RefreshSession(refreshCtx, l.cfg.RefreshToken)
+			refreshCancel()
+			if refreshErr != nil {
+				l.logger.Printf("token refresh failed: %v", refreshErr)
+				return err
+			}
+			l.mu.Lock()
+			l.cfg.AuthToken = resp.Token
+			if resp.RefreshToken != "" {
+				l.cfg.RefreshToken = resp.RefreshToken
+			}
+			l.mu.Unlock()
+			apiClient.SetToken(resp.Token)
+			l.logger.Printf("token refreshed successfully")
+			backoff = time.Second // reset backoff on successful refresh
+			continue
 		}
 
 		l.mu.Lock()
